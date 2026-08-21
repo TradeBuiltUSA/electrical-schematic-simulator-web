@@ -333,6 +333,12 @@ function generateThumbnail() {
 // A file outlives the build that wrote it, so imports check this and refuse a
 // file from a future version rather than half-applying fields they can't read.
 const SAVE_FORMAT_VERSION = 1;
+
+// Name of the project currently in play, set whenever one is saved or loaded.
+// Its only job is to give the toolbar's Export a name worth proposing — nothing
+// reads it back, and it is deliberately not persisted: after a reload the
+// circuit is the autosave, which has no project name to claim.
+let currentProjectName = null;
 const SAVE_FILE_APP = 'tradebuilt-electrical-schematic-simulator';
 
 /**
@@ -424,34 +430,63 @@ function readProjectFile(text) {
   return { ok: true, name, circuit };
 }
 
+// The one file input the picker uses, created on first import and reused after.
+// Reusing it is what keeps cancelled imports from piling up hidden nodes in the
+// body: cancelling fires no `change`, so a per-call input parked in the DOM
+// would never be cleaned up. Kept attached rather than detached because an
+// attached input is the shape every browser has always supported, and iPad is a
+// primary target we cannot easily re-verify.
+let _projectFileInput = null;
+let _projectFileCallback = null;
+
 /**
  * Open the OS file picker and hand the chosen file's vetted contents to `onOk`.
- * The input is created per call and discarded after: a persistent one keeps its
- * previous selection, so re-importing the same file fires no change event.
  *
  * @param {function(string, Object)} onOk called with (name, circuit) on success
  */
 function pickProjectFile(onOk) {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.json,application/json';
-  input.style.display = 'none';
-  document.body.appendChild(input);
-  input.addEventListener('change', () => {
-    const file = input.files && input.files[0];
-    const cleanup = () => { if (input.parentNode) document.body.removeChild(input); };
-    if (!file) { cleanup(); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      cleanup();
-      const res = readProjectFile(String(reader.result || ''));
-      if (!res.ok) { alert('Import failed.\n\n' + res.error); return; }
-      onOk(res.name, res.circuit);
-    };
-    reader.onerror = () => { cleanup(); alert('Could not read that file.'); };
-    reader.readAsText(file);
-  });
-  input.click();
+  if (!_projectFileInput) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.style.display = 'none';
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = readProjectFile(String(reader.result || ''));
+        if (!res.ok) { alert('Import failed.\n\n' + res.error); return; }
+        if (_projectFileCallback) _projectFileCallback(res.name, res.circuit);
+      };
+      reader.onerror = () => { alert('Could not read that file.'); };
+      reader.readAsText(file);
+    });
+    document.body.appendChild(input);
+    _projectFileInput = input;
+  }
+  _projectFileCallback = onOk;
+  // Clearing the value is what lets the same file be imported twice in a row.
+  // Picking an identical path is not a change, so without this the second
+  // import fires no event and looks like nothing happened.
+  _projectFileInput.value = '';
+  _projectFileInput.click();
+}
+
+/**
+ * Toolbar Export: name the file, then download the circuit on the canvas.
+ *
+ * Prompts rather than exporting straight to a default name. An export is a
+ * backup the user has to recognize later, and a folder of "Untitled Circuit"
+ * files is no better than losing them — so the name is asked for once, with the
+ * best guess already filled in for anyone who just wants to press Enter.
+ */
+function exportCurrentProject() {
+  const suggested = currentProjectName || 'Untitled Circuit';
+  const name = prompt('Name this exported file:', suggested);
+  if (name === null) return;                     // cancelled
+  const trimmed = name.trim() || suggested;
+  exportProjectFile(buildSaveData(), trimmed);
 }
 
 /**
@@ -671,6 +706,7 @@ function showSaveDialog() {
       const circuits = getSavedCircuits();
       circuits[name] = buildSaveData();
       saveSavedCircuits(circuits);
+      currentProjectName = name;
       document.body.removeChild(overlay);
       setStatus(`Project saved over "${name}"`);
     });
@@ -709,6 +745,7 @@ function showSaveDialog() {
     if (circuits[name] && !confirm(`Overwrite "${name}"?\nThis cannot be undone.`)) return;
     circuits[name] = buildSaveData();
     saveSavedCircuits(circuits);
+    currentProjectName = name;
     document.body.removeChild(overlay);
     setStatus(`Project saved as "${name}"`);
   };
@@ -844,6 +881,7 @@ function applyLoadedCircuit(c, label) {
   }
 
   selectedItem = null; hidePropsPanel();
+  currentProjectName = label;
   autoSave();
   render();
   setStatus(`Loaded "${label}"`);
@@ -952,6 +990,10 @@ function showLoadDialog() {
 
 document.getElementById('btn-save').addEventListener('click', showSaveDialog);
 document.getElementById('btn-load').addEventListener('click', showLoadDialog);
+document.getElementById('btn-export').addEventListener('click', exportCurrentProject);
+// Straight to the picker — the import lands in the library, and the Load dialog
+// opens on top so the newly imported project is right there to click.
+document.getElementById('btn-import').addEventListener('click', () => importProjectFile(showLoadDialog));
 document.getElementById('btn-manual').addEventListener('click', () => { window.open('manual.html', '_blank'); });
 
 // Dropdown toggle logic

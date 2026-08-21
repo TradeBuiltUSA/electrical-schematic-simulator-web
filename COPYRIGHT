@@ -1,0 +1,38 @@
+TradeBuilt Electrical Schematic Simulator
+Copyright (c) 2026 TradeBuilt(TM). All Rights Reserved.
+Created and designed by Kenneth J. Thompson.
+
+PROPRIETARY SOFTWARE - NOT OPEN SOURCE
+
+The TradeBuilt Electrical Schematic Simulator and its source code are
+proprietary software owned by TradeBuilt.
+
+This repository is publicly accessible solely to facilitate delivery of the web
+application. The simulator is a client-side web application, so its HTML, CSS,
+and JavaScript must be served to users' browsers in order to run. Publishing
+this repository is a technical requirement of that delivery, not an offer of
+the source code for reuse.
+
+NO LICENSE IS GRANTED
+
+No permission is granted to copy, reproduce, modify, adapt, translate,
+redistribute, publish, sublicense, sell, commercially exploit, or incorporate
+this software, or any substantial portion of it, into another product or
+service without prior written permission from TradeBuilt.
+
+The public availability of this repository does not constitute an open-source
+license and does not grant any rights beyond viewing this repository and using
+the hosted TradeBuilt Electrical Schematic Simulator as intended, at:
+
+    https://tradebuiltusa.github.io/electrical-schematic-simulator-web/
+
+No trademark rights in the TradeBuilt name or logo are granted.
+
+Rights that applicable law grants to you regardless of the above - for example
+fair use or fair dealing - are unaffected by this notice.
+
+PERMISSION REQUESTS
+
+To request permission for any use beyond the above, open an issue at
+https://github.com/TradeBuiltUSA/electrical-schematic-simulator-web/issues
+and a member of TradeBuilt will follow up.

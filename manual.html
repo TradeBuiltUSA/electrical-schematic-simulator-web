@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>User Manual — TradeBuilt Electrical Schematic Simulator</title>
+<link rel="icon" type="image/svg+xml" href="Assets/favicon.svg">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f8f9fa; color: #222; line-height: 1.7; }
+  .topbar { position: sticky; top: 0; z-index: 100; background: #1a1a1a; color: #fff; padding: 10px 24px; display: flex; align-items: center; gap: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+  .topbar img { height: 30px; border-radius: 4px; background: #111; padding: 2px 5px; }
+  .topbar .topbar-title { font-size: 16px; font-weight: 600; }
+  .topbar .back-btn { background: #3366cc; color: #fff; border: none; border-radius: 5px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; margin-left: auto; }
+  .topbar .back-btn:hover { background: #2255bb; }
+  .container { max-width: 860px; margin: 0 auto; padding: 40px 32px 80px; }
+  h1.title { font-size: 32px; font-weight: 800; color: #111; margin-bottom: 4px; }
+  .subtitle { font-size: 18px; color: #666; margin-bottom: 8px; }
+  .author { font-size: 14px; color: #888; margin-bottom: 32px; }
+  .description { font-size: 15px; color: #444; margin-bottom: 32px; line-height: 1.8; }
+  hr { border: none; border-top: 1px solid #e0e0e0; margin: 36px 0; }
+  h2 { font-size: 22px; font-weight: 700; color: #111; margin-bottom: 16px; margin-top: 8px; padding-bottom: 8px; border-bottom: 2px solid #3366cc; }
+  h3 { font-size: 17px; font-weight: 700; color: #333; margin: 20px 0 10px; }
+  p { margin-bottom: 12px; font-size: 14.5px; color: #333; }
+  strong { color: #111; }
+  ul, ol { margin: 8px 0 16px 24px; font-size: 14.5px; color: #333; }
+  li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 14px; }
+  th { background: #f0f2f5; text-align: left; padding: 10px 14px; font-weight: 700; color: #333; border: 1px solid #ddd; }
+  td { padding: 9px 14px; border: 1px solid #ddd; color: #444; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  code { background: #f0f2f5; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'SF Mono', Consolas, monospace; color: #c7254e; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.6; margin: 12px 0 20px; font-family: 'SF Mono', Consolas, monospace; }
+  .toc { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px 28px; margin-bottom: 32px; }
+  .toc h2 { margin: 0 0 12px; font-size: 15px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; border: none; padding-bottom: 0; }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: #3366cc; text-decoration: none; font-size: 14px; }
+  .toc a:hover { text-decoration: underline; }
+  .section { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 28px 32px; margin-bottom: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+  .footer { text-align: center; padding: 24px; font-size: 13px; color: #888; border-top: 1px solid #e0e0e0; margin-top: 40px; }
+
+  /* Phone widths. The reference tables (multimeter modes, keyboard shortcuts,
+     touch gestures) have a min-content width of roughly 370px, which is wider
+     than the content box of a 320-430px screen — they were pushing the whole
+     page sideways. Give each section its own horizontal scroll so a wide table
+     scrolls within the card instead, and tighten the padding to buy back width. */
+  @media (max-width: 640px) {
+    .container { padding: 24px 16px 60px; }
+    .section { padding: 20px 16px; overflow-x: auto; }
+    .toc { padding: 16px 18px; }
+    h1.title { font-size: 24px; }
+    h2 { font-size: 19px; }
+    .topbar { padding: 10px 14px; gap: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <img src="Assets/topbar-logo.png" alt="TradeBuilt">
+  <div class="topbar-title">User Manual</div>
+  <button class="back-btn" onclick="window.close(); window.location.href='index.html';">Back to Simulator</button>
+</div>
+
+<div class="container">
+
+<h1 class="title">TradeBuilt Electrical Schematic Simulator</h1>
+<div class="subtitle">User Manual</div>
+<p class="description">An interactive AC circuit schematic simulator built for HVAC trade education. Design, wire, and energize circuits with real-time Ohm's Law calculations, electron flow animation, and IEEE/ANSI schematic symbols.</p>
+<div class="author">Created and Designed by <strong>Kenneth J. Thompson</strong></div>
+
+<div class="toc">
+  <h2>Table of Contents</h2>
+  <ol>
+    <li><a href="#getting-started">Getting Started</a></li>
+    <li><a href="#toolbar">Toolbar</a></li>
+    <li><a href="#editor-tools">Editor Tools</a></li>
+    <li><a href="#components">Components</a></li>
+    <li><a href="#tool-bag">Technician's Tool Bag</a></li>
+    <li><a href="#workspace-controls">Workspace Controls</a></li>
+    <li><a href="#view-menu">View Menu</a></li>
+    <li><a href="#circuit-logic">Circuit Logic</a></li>
+    <li><a href="#electron-flow">Electron Flow Animation</a></li>
+    <li><a href="#data-boxes">Data Boxes</a></li>
+    <li><a href="#properties-panel">Properties Panel</a></li>
+    <li><a href="#fault-simulation">Fault Simulation</a></li>
+    <li><a href="#saving-loading">Saving and Loading</a></li>
+    <li><a href="#keyboard-shortcuts">Keyboard Shortcuts</a></li>
+    <li><a href="#touch-support">Touch and Mobile Support</a></li>
+  </ol>
+</div>
+
+<div class="section" id="getting-started">
+  <h2>Getting Started</h2>
+  <p>Open <code>index.html</code> in any modern web browser (Chrome, Firefox, Safari, Edge). No installation, server, or internet connection required — everything runs locally in the browser.</p>
+</div>
+
+<div class="section" id="toolbar">
+  <h2>Toolbar</h2>
+  <p>The top toolbar contains all primary controls for the simulator.</p>
+  <table>
+    <tr><th>Button</th><th>Description</th></tr>
+    <tr><td><strong>Energize</strong></td><td>Powers the circuit on or off. Toggles electron flow and live data readouts.</td></tr>
+    <tr><td><strong>Reset</strong></td><td>Resets all blown fuses, tripped breakers, and time delay countdowns back to their default states.</td></tr>
+    <tr><td><strong>Undo / Redo</strong></td><td>Step backward or forward through your edit history.</td></tr>
+    <tr><td><strong>Clear All</strong></td><td>Removes all components, wires, and comment boxes from the workspace.</td></tr>
+    <tr><td><strong>View</strong></td><td>Dropdown menu to toggle visibility of data, labels, electrons, and more.</td></tr>
+    <tr><td><strong>Settings</strong></td><td>Save and Load project circuits.</td></tr>
+  </table>
+</div>
+
+<div class="section" id="editor-tools">
+  <h2>Editor Tools</h2>
+  <p>Located in the left sidebar panel.</p>
+  <h3>Select Tool</h3>
+  <ul>
+    <li>Click a component or wire to select it</li>
+    <li>Drag selected items to reposition them on the grid</li>
+    <li>Right-click for a context menu with Delete, Properties, and Rotate options</li>
+    <li>Click and drag on empty space to box-select multiple items</li>
+    <li>Drag any item in a multi-selection to move the entire group</li>
+  </ul>
+  <h3>Wire Tool</h3>
+  <ul>
+    <li>Click a grid point to start a wire, then click a second grid point to complete it</li>
+    <li>Wires snap to the grid at full and half-grid intervals</li>
+    <li>Wires automatically create junction dots where 3 or more connections meet</li>
+    <li>Wire color can be changed via the Properties panel (Black, Red, Green, Light Grey)</li>
+  </ul>
+  <h3>Comment Box Tool</h3>
+  <ul>
+    <li>Click and drag to draw a rectangular comment region on the canvas</li>
+    <li>Type text inline with a live preview</li>
+    <li>Choose from 7 border colors: Black, Grey, Blue, Green, Yellow, Red, Orange</li>
+    <li>Double-click an existing comment box to edit its text</li>
+    <li>Resize by dragging any corner or edge handle</li>
+    <li>Comments can be selected, moved, and deleted like other items</li>
+  </ul>
+</div>
+
+<div class="section" id="components">
+  <h2>Components</h2>
+
+  <h3>Power</h3>
+  <p><strong>120V Power Source</strong></p>
+  <ul>
+    <li>Adjustable voltage (default 120V) and frequency (default 60 Hz)</li>
+    <li>Terminals labeled L1 (hot) and N (neutral)</li>
+    <li>Can be toggled on/off via the Properties panel</li>
+    <li>Right-click and select "Flip L1 / N" to swap terminal orientation</li>
+    <li>Detects short circuits and overload conditions</li>
+  </ul>
+  <p><strong>240V Power Source</strong> — Single phase, two hot legs labeled L1 and L2. Same properties as the 120V source.</p>
+  <p><strong>480V &Delta; Power Source</strong> — Three phase delta, three terminals labeled L1, L2 and L3, with no neutral. 480V line-to-line.</p>
+  <p><strong>480V Wye Power Source</strong> — Three phase wye (480Y/277V): three hot legs plus a neutral, so line-to-neutral measures 277V.</p>
+  <p><strong>DC Battery</strong> — Direct current source, default 12V, terminals labeled + and &minus;. Flip with <strong>F</strong> or the right-click menu.</p>
+  <p><strong>Earth Ground</strong> — Ties a node to earth potential as a 0V reference.</p>
+  <p><strong>Transformer</strong></p>
+  <ul>
+    <li>Steps voltage up or down between primary and secondary windings</li>
+    <li>Default: 120V primary / 24V secondary</li>
+    <li>4-terminal component with L1, N (primary) and R, C (secondary) labels</li>
+    <li>Displays separate PRI and SEC data boxes with independent voltage, current, and wattage readings</li>
+    <li>Power is conserved across windings</li>
+  </ul>
+
+  <h3>Loads</h3>
+  <p><strong>Resistor</strong> — Adjustable resistance in ohms (default 100 ohm). Drawn with IEC rectangle symbol and color band indicators.</p>
+  <p><strong>Light Bulb</strong> — Default 100W / 144 ohm. Glows when energized with a gentle pulse animation. Bulb color options: Yellow (default), Red, Blue, Orange.</p>
+  <p><strong>Fan Motor</strong> — Default 1/2 HP at 120V, 300W, 38.6 ohm winding. Winding resistance is derived from the selected horsepower and motor voltage, and the motor is modelled as an inductive load (default power factor 0.75), so running current follows the impedance rather than resistance alone. Blades spin when energized — speed scales with power delivered. Animated wind swoosh arcs shown during operation.</p>
+  <p><strong>Compressor</strong> — Three-terminal CSR motor (Common, Start, Run) with separate run and start windings (defaults 1.5 ohm run / 2.5 ohm start) and an optional start-winding cutout after a set time.</p>
+  <p><strong>Capacitor</strong> — Adjustable capacitance in microfarads (default 10 uF). Reactance (Xc) calculated automatically. Supports fault modes (open/short).</p>
+  <p><strong>Outlet</strong> — Configurable wattage load (default 0W = empty outlet). Shows live voltage and power consumption when energized. Supports fault modes (open/short).</p>
+
+  <h3>Switches</h3>
+  <p><strong>Single Pole Switch</strong> — Click to toggle between open and closed states.</p>
+  <p><strong>DPDT Switch</strong> — Places two switch poles sharing a switch group, so both throw together.</p>
+  <p><strong>Time Delay Switch</strong> — Starts a countdown when electricity reaches its terminals. Closes automatically after the set delay (default 5 seconds). Displays a countdown timer with a clock icon and progress arc.</p>
+
+  <h3>Controls</h3>
+  <p><strong>Single Pole Contactor</strong> — Places a coil and contact pair linked by a shared group letter. The coil (default 24V, 200 ohm) goes in the control circuit, the contact goes in the power circuit. When the coil is energized, all contacts in the same group close automatically. Multiple contacts can share one coil for multi-pole control.</p>
+  <p><strong>Relay</strong> — Same coil-and-contact pairing as the contactor, at a lower rating (default 24V, 150 ohm coil). Contacts can be set normally open (NO) or normally closed (NC) from the Properties panel.</p>
+
+  <h3>Protection</h3>
+  <p><strong>High Voltage Fuse</strong> — Default rated at 15A. Blows when current exceeds rated amps, breaking the circuit.</p>
+  <p><strong>Low Voltage Fuse</strong> — Default rated at 3A. Same behavior as the HV fuse, designed for low voltage circuits.</p>
+  <p><strong>Time Delay Fuse</strong> — Default rated at 30A. Tolerates an overload for its set delay (default 10 seconds) before blowing, so motor inrush does not nuisance-trip it.</p>
+  <p><strong>Single Pole Breaker</strong> — Default rated at 20A. Trips when current exceeds rated amps. Reset via the Properties panel or the Reset toolbar button.</p>
+</div>
+
+<div class="section" id="tool-bag">
+  <h2>Technician's Tool Bag</h2>
+  <p>The tool bag sits at the bottom of the sidebar. Hover over the bag image to reveal four diagnostic instruments. Click an instrument to open it.</p>
+
+  <h3>Digital Multimeter</h3>
+  <p>A full-featured digital multimeter with five measurement modes.</p>
+  <table>
+    <tr><th>Mode</th><th>Symbol</th><th>Description</th></tr>
+    <tr><td><strong>VAC</strong></td><td>V AC</td><td>Measures AC voltage between two probe points</td></tr>
+    <tr><td><strong>VDC</strong></td><td>V DC</td><td>Measures DC voltage between two probe points</td></tr>
+    <tr><td><strong>AAC</strong></td><td>A Amps</td><td>Measures AC current through a component (place probes across it)</td></tr>
+    <tr><td><strong>Ohms</strong></td><td>&ohm;</td><td>Measures resistance between two points (circuit must be de-energized)</td></tr>
+    <tr><td><strong>Cap</strong></td><td>&micro;F</td><td>Measures capacitance in microfarads (circuit must be de-energized)</td></tr>
+  </table>
+  <p><strong>How to use:</strong></p>
+  <ol>
+    <li>Click the Digital Multimeter button in the tool bag to open it</li>
+    <li>Select a measurement mode using the buttons on the meter face</li>
+    <li>Drag the red and black probe tips from the meter jacks onto circuit nodes</li>
+    <li>The meter display updates in real-time with the measured value</li>
+    <li>Drag probes back to the jacks or close the meter when finished</li>
+  </ol>
+  <p><strong>Ohmmeter Charge Animation:</strong> When measuring a capacitor with the ohmmeter, the display simulates a real charging curve — resistance climbs from near zero up to O.L. (open line) over time. Larger capacitors charge more slowly, just like a real meter.</p>
+
+  <h3>Non-Contact Voltage (NCV) Tester</h3>
+  <p>Detects the presence of AC voltage without touching bare conductors.</p>
+  <table>
+    <tr><th>Range</th><th>Indication</th></tr>
+    <tr><td><strong>12V &ndash; 90V</strong></td><td>Low range &mdash; green LED</td></tr>
+    <tr><td><strong>90V &ndash; 1000V</strong></td><td>High range &mdash; red LED</td></tr>
+    <tr><td><strong>No voltage</strong></td><td>No indication</td></tr>
+  </table>
+  <p><strong>How to use:</strong></p>
+  <ol>
+    <li>Click the NCV Tester button in the tool bag to open it</li>
+    <li>Drag the probe tip near any wire or component on the canvas</li>
+    <li>The LED bar and status text update based on detected voltage</li>
+    <li>The tester detects voltage within approximately 1.5 grid cells of the tip</li>
+    <li>Drag the tip back to the tester body or close it when finished</li>
+  </ol>
+
+  <h3>Amp Clamp (Clamp Meter)</h3>
+  <p>Measures AC current by clamping around a wire — no need to break the circuit.</p>
+  <ol>
+    <li>Click the Amp Clamp button in the tool bag to open it</li>
+    <li>Drag the jaw icon over any energized wire on the canvas</li>
+    <li>The display shows the current flowing through that wire in amps</li>
+    <li>The jaw detects current within approximately 1.2 grid cells</li>
+  </ol>
+
+  <h3>Clipboard (Technician's Notes)</h3>
+  <p>A multi-page notepad for writing observations, procedures, or troubleshooting notes during a session.</p>
+  <ul>
+    <li>Add unlimited pages with the "+ Add Page" button</li>
+    <li>Navigate between pages with the arrow buttons</li>
+    <li>Delete pages with the X button on each page</li>
+    <li>All notes persist in browser storage across page refreshes</li>
+    <li>Drag the clipboard by its top handle to reposition</li>
+    <li>Resize by dragging any corner or edge (minimum 200 x 260 pixels)</li>
+  </ul>
+</div>
+
+<div class="section" id="workspace-controls">
+  <h2>Workspace Controls</h2>
+  <table>
+    <tr><th>Action</th><th>Mouse</th><th>Trackpad</th><th>Keyboard</th></tr>
+    <tr><td><strong>Pan</strong></td><td>Right-click + drag</td><td>Two-finger swipe</td><td>&mdash;</td></tr>
+    <tr><td><strong>Zoom</strong></td><td>Scroll wheel</td><td>Pinch to zoom</td><td>&mdash;</td></tr>
+    <tr><td><strong>Rotate before placing</strong></td><td>&mdash;</td><td>&mdash;</td><td>R</td></tr>
+    <tr><td><strong>Flip AC source</strong></td><td>&mdash;</td><td>&mdash;</td><td>F</td></tr>
+    <tr><td><strong>Delete selected</strong></td><td>&mdash;</td><td>&mdash;</td><td>Delete or Backspace</td></tr>
+    <tr><td><strong>Undo</strong></td><td>&mdash;</td><td>&mdash;</td><td>Ctrl+Z / Cmd+Z</td></tr>
+    <tr><td><strong>Redo</strong></td><td>&mdash;</td><td>&mdash;</td><td>Ctrl+Y / Cmd+Y</td></tr>
+    <tr><td><strong>Cancel / Deselect</strong></td><td>&mdash;</td><td>&mdash;</td><td>Escape</td></tr>
+    <tr><td><strong>Multi-select</strong></td><td>Click + drag on empty space</td><td>&mdash;</td><td>&mdash;</td></tr>
+    <tr><td><strong>Context menu</strong></td><td>Right-click on item</td><td>Long press</td><td>&mdash;</td></tr>
+  </table>
+</div>
+
+<div class="section" id="view-menu">
+  <h2>View Menu</h2>
+  <p>Toggle the visibility of various display layers from the View dropdown in the toolbar.</p>
+  <table>
+    <tr><th>Toggle</th><th>What it controls</th></tr>
+    <tr><td><strong>Component Data</strong></td><td>Live voltage/current/watts/ohms data boxes next to components</td></tr>
+    <tr><td><strong>Component Titles</strong></td><td>The name label above each component</td></tr>
+    <tr><td><strong>Component Info</strong></td><td>Specifications text (rated amps, wattage, resistance, etc.)</td></tr>
+    <tr><td><strong>Component Status</strong></td><td>Operational status indicators (Energized, Blown, Tripped, etc.)</td></tr>
+    <tr><td><strong>Comment Box</strong></td><td>All comment box regions and their text</td></tr>
+    <tr><td><strong>Electrons</strong></td><td>Animated electron dots flowing along energized wires</td></tr>
+    <tr><td><strong>Energized Colors</strong></td><td>Red highlighting on live wires and components</td></tr>
+    <tr><td><strong>Faults</strong></td><td>Fault labels (Open Circuit / Short Circuit) shown below faulted components</td></tr>
+  </table>
+  <p>All view settings persist across browser sessions.</p>
+</div>
+
+<div class="section" id="circuit-logic">
+  <h2>Circuit Logic</h2>
+  <h3>Ohm's Law</h3>
+  <p>All circuit values are calculated in real-time using nodal analysis:</p>
+  <ul>
+    <li><strong>V = I &times; R</strong> (Voltage = Current &times; Resistance)</li>
+    <li><strong>P = I &times; V</strong> (Power = Current &times; Voltage)</li>
+  </ul>
+  <h3>Series Circuits</h3>
+  <p>Components wired in a single path share the same current. Voltage divides proportionally across each component based on its resistance.</p>
+  <h3>Parallel Circuits</h3>
+  <p>Components wired side by side share the same voltage. Current divides between branches inversely proportional to their resistance.</p>
+  <h3>Short Circuit Detection</h3>
+  <p>If a zero-resistance path connects the source terminals directly, the source displays a SHORT CIRCUIT warning. Fuses and breakers in the path will trip or blow before the warning appears if they are rated below the fault current.</p>
+  <h3>Fuse and Breaker Protection</h3>
+  <p>When current through a fuse or breaker exceeds its rated amperage, the device automatically triggers — fuses blow and breakers trip — breaking the circuit to protect downstream components.</p>
+  <h3>Transformer Voltage Stepping</h3>
+  <p>Secondary voltage is calculated as: Primary Voltage &times; (Secondary Rating / Primary Rating). Power is conserved across windings so secondary current adjusts accordingly.</p>
+  <h3>Contactor Control</h3>
+  <p>When a contactor coil receives sufficient voltage, all contacts sharing the same group letter close simultaneously. This allows a low-voltage control circuit (e.g., 24V thermostat) to switch a high-voltage power circuit (e.g., 240V compressor).</p>
+</div>
+
+<div class="section" id="electron-flow">
+  <h2>Electron Flow Animation</h2>
+  <ul>
+    <li>Animated dots flow along energized wires showing current direction</li>
+    <li>Flow direction follows voltage potential from L1 (hot) toward N (neutral)</li>
+    <li>Dot speed scales with current magnitude — higher current means faster flow</li>
+    <li>Electrons use AC oscillation synchronized across the entire circuit</li>
+    <li>Open switches and blown fuses correctly stop flow on the broken side</li>
+    <li>Open time delay switches show electrons flowing up to their terminals (voltage presence without current)</li>
+  </ul>
+</div>
+
+<div class="section" id="data-boxes">
+  <h2>Data Boxes</h2>
+  <p>When the circuit is energized and Component Data is enabled, each component displays a floating data box with live readings:</p>
+  <table>
+    <tr><th>Component</th><th>Data Shown</th></tr>
+    <tr><td><strong>AC Power Source</strong></td><td>Status (Flowing/Energized/OFF/Overload), Voltage, Current, Watts</td></tr>
+    <tr><td><strong>Resistor / Bulb / Fan</strong></td><td>Voltage drop, Current, Watts, Resistance</td></tr>
+    <tr><td><strong>Capacitor</strong></td><td>Voltage, Current, Watts, Reactance (Xc)</td></tr>
+    <tr><td><strong>Outlet</strong></td><td>Voltage, Current, Watts (if loaded)</td></tr>
+    <tr><td><strong>Fuse / Breaker</strong></td><td>Current through the device</td></tr>
+    <tr><td><strong>Transformer</strong></td><td>Separate PRI and SEC boxes with Voltage, Current, Watts each</td></tr>
+    <tr><td><strong>Contactor Coil</strong></td><td>Voltage, Current, Watts</td></tr>
+  </table>
+  <p>Data boxes can be dragged to any position on the canvas. A dashed tether line connects each box to its component.</p>
+</div>
+
+<div class="section" id="properties-panel">
+  <h2>Properties Panel</h2>
+  <p>Right-click any component or wire and select <strong>Properties</strong> to open the editor.</p>
+  <ul>
+    <li>Drag the panel by its title bar to reposition</li>
+    <li>A dashed tether line connects the panel to the selected item</li>
+    <li>Editable fields vary by component type: Voltage, resistance, watt rating, capacitance, delay time, coil voltage, contactor group letter, bulb color, fuse/breaker rated amps, wire color, fault mode, and component label</li>
+    <li>Click <strong>Close</strong> to dismiss or <strong>Delete</strong> to remove the component</li>
+  </ul>
+</div>
+
+<div class="section" id="fault-simulation">
+  <h2>Fault Simulation</h2>
+  <p>Fault modes allow instructors and students to simulate real-world component failures for troubleshooting practice.</p>
+  <p><strong>Components that support fault modes:</strong> Resistor, Light Bulb, Fan, Capacitor, Contactor Coil, Outlet</p>
+  <table>
+    <tr><th>Fault</th><th>Behavior</th></tr>
+    <tr><td><strong>None</strong></td><td>Normal operation</td></tr>
+    <tr><td><strong>Open Circuit</strong></td><td>Component acts as if physically broken — no current flows through it</td></tr>
+    <tr><td><strong>Short Circuit</strong></td><td>Component is bypassed with zero resistance — current flows through without voltage drop</td></tr>
+  </table>
+  <p>Set fault modes in the Properties panel. When the Faults view toggle is enabled, a label appears below the faulted component indicating the fault type.</p>
+</div>
+
+<div class="section" id="saving-loading">
+  <h2>Saving and Loading</h2>
+  <h3>Save</h3>
+  <ol>
+    <li>Click <strong>Settings &gt; Save Project</strong> in the toolbar</li>
+    <li>Enter a name for the project</li>
+    <li>Click Save — the project is stored in browser localStorage</li>
+    <li>Overwriting an existing save will prompt for confirmation</li>
+  </ol>
+  <h3>Load</h3>
+  <ol>
+    <li>Click <strong>Settings &gt; Load Project</strong> in the toolbar</li>
+    <li>Browse saved projects showing thumbnail, component count, and save date</li>
+    <li>Click a project to load it</li>
+    <li>Click the &times; button to delete a saved project</li>
+  </ol>
+  <h3>Auto-Save</h3>
+  <p>The current project auto-saves on every change and restores automatically when the page is refreshed. If the circuit was energized when you closed the browser, it will restore in the energized state.</p>
+</div>
+
+<div class="section" id="keyboard-shortcuts">
+  <h2>Keyboard Shortcuts</h2>
+  <table>
+    <tr><th>Key</th><th>Action</th></tr>
+    <tr><td><strong>R</strong></td><td>Rotate component 90 degrees (before placing or after selecting)</td></tr>
+    <tr><td><strong>Q</strong></td><td>Reset simulation</td></tr>
+    <tr><td><strong>F</strong></td><td>Flip L1/N terminals on an AC power source</td></tr>
+    <tr><td><strong>1</strong></td><td>Select Select tool</td></tr>
+    <tr><td><strong>2</strong></td><td>Select Comment Box tool</td></tr>
+    <tr><td><strong>Delete / Backspace</strong></td><td>Delete selected item(s)</td></tr>
+    <tr><td><strong>Ctrl+Delete / Cmd+Delete</strong></td><td>Clear all</td></tr>
+    <tr><td><strong>Ctrl+S / Cmd+S</strong></td><td>Save project</td></tr>
+    <tr><td><strong>Ctrl+L / Cmd+L</strong></td><td>Load project</td></tr>
+    <tr><td><strong>Ctrl+C / Cmd+C</strong></td><td>Copy selection</td></tr>
+    <tr><td><strong>Ctrl+V / Cmd+V</strong></td><td>Paste selection</td></tr>
+    <tr><td><strong>Ctrl+D / Cmd+D</strong></td><td>Duplicate selection</td></tr>
+    <tr><td><strong>Ctrl+A / Cmd+A</strong></td><td>Select all components, wires, and comment boxes</td></tr>
+    <tr><td><strong>Ctrl+Z / Cmd+Z</strong></td><td>Undo</td></tr>
+    <tr><td><strong>Ctrl+Y / Cmd+Y</strong></td><td>Redo</td></tr>
+    <tr><td><strong>Ctrl+Shift+Z / Cmd+Shift+Z</strong></td><td>Redo (alternate)</td></tr>
+    <tr><td><strong>Spacebar</strong></td><td>Toggle Energize / De-Energize</td></tr>
+    <tr><td><strong>Tab</strong></td><td>Cycle forward through components (while the canvas has focus — click the canvas first). Elsewhere on the page, Tab moves between toolbar and tool buttons as usual.</td></tr>
+    <tr><td><strong>Shift+Tab</strong></td><td>Cycle backward through components</td></tr>
+    <tr><td><strong>Escape</strong></td><td>Cancel current action, close menus, deselect all</td></tr>
+  </table>
+</div>
+
+<div class="section" id="touch-support">
+  <h2>Touch and Mobile Support</h2>
+  <p>The simulator supports touch input for tablets and mobile devices.</p>
+  <table>
+    <tr><th>Gesture</th><th>Action</th></tr>
+    <tr><td><strong>Tap</strong></td><td>Select a component or wire</td></tr>
+    <tr><td><strong>Long press</strong></td><td>Open the context menu (equivalent to right-click)</td></tr>
+    <tr><td><strong>Drag</strong></td><td>Move selected items, place components, draw wires</td></tr>
+    <tr><td><strong>Two-finger pinch</strong></td><td>Zoom in and out</td></tr>
+    <tr><td><strong>Two-finger swipe</strong></td><td>Pan the canvas</td></tr>
+  </table>
+</div>
+
+
+</div>
+<footer style="text-align:center;padding:4px 0;font-size:13px;color:#000;background-color:#d3d3d3;">Property of TradeBuilt | Created and Designed by Kenneth J. Thompson</footer>
+</body>
+</html>

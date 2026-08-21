@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Electrical Schematic Simulator — HVAC Training</title>
+<link rel="icon" type="image/svg+xml" href="Assets/favicon.svg">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ── Loading screen (hidden instantly on refresh) ── -->
+<script>
+/* Skip the splash on a refresh. performance.navigation is deprecated and is
+   absent in some browsers (reading .type off undefined threw); the Navigation
+   Timing Level 2 entry is the supported form, with the legacy API as fallback. */
+(function(){
+  var reload = false;
+  try {
+    var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+    if (nav) reload = nav.type === 'reload';
+    else if (performance.navigation) reload = performance.navigation.type === 1;
+  } catch (e) {}
+  if (reload) document.write('<style>#tb-loader{display:none!important}</style>');
+})();
+</script>
+<div id="tb-loader">
+  <div id="tb-loader-inner">
+    <div id="tb-loader-logo-wrap">
+      <img src="Assets/topbar-logo.png" alt="TradeBuilt" id="tb-loader-logo">
+    </div>
+    <p id="tb-loader-label">Electrical Schematic Simulator</p>
+    <div id="tb-loader-bar-track">
+      <div id="tb-loader-bar"></div>
+    </div>
+    <p id="tb-loader-status">Initializing simulator&hellip;</p>
+  </div>
+</div>
+
+<style>
+#tb-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #080b14;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.55s ease, visibility 0.55s ease;
+}
+#tb-loader.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+#tb-loader-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+#tb-loader-logo-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#tb-loader-logo-wrap::before {
+  content: '';
+  position: absolute;
+  inset: -24px;
+  background: radial-gradient(ellipse 80% 60% at 50% 50%,
+    rgba(245, 158, 11, 0.22) 0%, transparent 70%);
+  border-radius: 50%;
+  animation: loaderPulse 2s ease-in-out infinite;
+}
+#tb-loader-logo {
+  height: 80px;
+  border-radius: 14px;
+  filter:
+    drop-shadow(0 0 28px rgba(245, 158, 11, 0.55))
+    drop-shadow(0 0 8px rgba(245, 158, 11, 0.35));
+  animation: loaderPulse 2s ease-in-out infinite;
+}
+#tb-loader-label {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(245, 158, 11, 0.85);
+  margin-top: 4px;
+}
+#tb-loader-bar-track {
+  width: 200px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 99px;
+  overflow: hidden;
+}
+#tb-loader-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  border-radius: 99px;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.6);
+  transition: width 0.3s ease;
+}
+#tb-loader-status {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.04em;
+}
+@keyframes loaderPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.75; }
+}
+</style>
+
+<div id="sr-announce" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+<div id="topbar" role="toolbar" aria-label="Circuit simulator toolbar">
+  <span style="position:relative;display:inline-flex;align-items:center;margin-right:8px;">
+    <img src="Assets/topbar-logo.png" alt="TradeBuilt" id="topbar-logo" style="height:34px;border-radius:5px;cursor:pointer;transition:transform 0.2s ease;background:#111;padding:3px 6px;">
+    <sup style="font-size:9px;font-weight:700;color:rgba(255,255,255,0.55);position:absolute;top:2px;right:-10px;line-height:1;">&#8482;</sup>
+  </span>
+  <span class="divider"></span>
+  <h1>Electrical Schematic Simulator</h1>
+  <span class="divider"></span>
+  <button id="btn-sim" title="Energize / De-Energize circuit" aria-label="Energize or de-energize the circuit" aria-pressed="false"><svg style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;" viewBox="0 0 24 24" fill="#fff" stroke="none" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/></svg>Energize</button>
+  <button id="btn-reset" title="Reset simulation" aria-label="Reset simulation"><svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="5,3 15,10 5,17" fill="currentColor" stroke="none" transform="translate(-1,0)"/><line x1="16" y1="3" x2="16" y2="17" stroke-width="2.5"/></svg>Reset</button>
+  <span class="divider"></span>
+  <button id="btn-undo" title="Undo (Ctrl+Z)" aria-label="Undo last action">↩ Undo</button>
+  <button id="btn-redo" title="Redo (Ctrl+Y)" aria-label="Redo last action">↪ Redo</button>
+  <span class="divider"></span>
+  <button id="btn-clear" aria-label="Clear all components from the circuit">Clear All</button>
+  <span class="flex-spacer"></span>
+  <div class="dropdown" id="dropdown-view">
+    <button class="dropdown-btn" aria-label="Toggle view options menu" aria-haspopup="menu" aria-expanded="false">View ▾</button>
+    <div class="dropdown-menu" role="menu">
+      <label class="toggle-item"><input type="checkbox" id="chk-data" checked> Component Data</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-titles" checked> Component Titles</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-info" checked> Component Info</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-status" checked> Component Status</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-comments" checked> Comment Box</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-electrons" checked> Electrons</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-energized-colors" checked> Energized Colors</label>
+      <label class="toggle-item"><input type="checkbox" id="chk-faults" checked> Faults</label>
+    </div>
+  </div>
+  <div class="dropdown" id="dropdown-settings">
+    <button class="dropdown-btn" aria-label="Toggle settings menu" aria-haspopup="menu" aria-expanded="false">Settings ▾</button>
+    <div class="dropdown-menu" role="menu">
+      <button id="btn-save" role="menuitem" aria-label="Save the current project">Save Project</button>
+      <hr style="border:none;border-top:1px solid #e0e0e0;margin:4px 12px;">
+      <button id="btn-load" role="menuitem" aria-label="Load a saved project">Load Project</button>
+      <hr style="border:none;border-top:1px solid #e0e0e0;margin:4px 12px;">
+      <button id="btn-manual" role="menuitem" aria-label="Open user manual">User Manual</button>
+    </div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="sidebar" role="navigation" aria-label="Component toolbox">
+  <div id="sidebar-scroll" role="toolbar" aria-label="Component selection tools">
+    <h2><span class="badge">Editor Tools</span><span class="badge-help" data-tip="Select, move, and annotate components on the workspace">i</span></h2>
+    <button class="tool-btn selected" aria-pressed="true" data-tool="select" aria-label="Select tool - click to select and manipulate components">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l9 24 4-9 9-4z" fill="currentColor" opacity="0.15"/><path d="M6 4l9 24 4-9 9-4z"/></svg></span>
+      Select
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="comment" aria-label="Comment tool - add text annotations">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="4" y="4" width="24" height="18" rx="2" fill="currentColor" opacity="0.08"/><rect x="4" y="4" width="24" height="18" rx="2"/><line x1="9" y1="10" x2="23" y2="10" stroke-width="1.5"/><line x1="9" y1="14" x2="19" y2="14" stroke-width="1.5"/></svg></span>
+      Comment Box
+    </button>
+    <h2><span class="badge">Conductors</span><span class="badge-help" data-tip="Wires that carry current between components">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="wire" aria-label="Wire tool - connect components">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="16" x2="28" y2="16"/><circle cx="4" cy="16" r="2" fill="currentColor"/><circle cx="28" cy="16" r="2" fill="currentColor"/></svg></span>
+      Wire
+    </button>
+    <h2><span class="badge">Power</span><span class="badge-help" data-tip="Voltage sources and transformers that supply energy to the circuit">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="ac_120" aria-label="120V AC power source - single phase N/L1">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="16" cy="16" r="10"/><path d="M9 16 Q11.5 9, 16 16 Q20.5 23, 23 16" stroke-width="1.8"/><line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/></svg></span>
+      120V Power Source
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="ac_240" aria-label="240V AC power source - single phase L1/L2">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="16" cy="16" r="10"/><path d="M9 16 Q11.5 9, 16 16 Q20.5 23, 23 16" stroke-width="1.8"/><line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/><text x="16" y="8" font-size="6" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">2P</text></svg></span>
+      240V Power Source
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="ac_480" aria-label="480V Delta power source - three phase L1/L2/L3 no neutral">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="16" cy="16" r="10"/><path d="M9 16 Q11.5 9, 16 16 Q20.5 23, 23 16" stroke-width="1.8" opacity="1"/><path d="M9 16 Q11.5 12, 16 19 Q20.5 26, 23 19" stroke-width="1.2" opacity="0.5"/><path d="M9 13 Q11.5 6, 16 13 Q20.5 20, 23 13" stroke-width="1.2" opacity="0.5"/><line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/><text x="16" y="8" font-size="5" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">3φ</text></svg></span>
+      480V &#x394; Power Source
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="ac_480_wye" aria-label="480V Wye power source - 480Y/277V three phase with neutral">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="16" cy="16" r="10"/><path d="M9 16 Q11.5 9, 16 16 Q20.5 23, 23 16" stroke-width="1.8" opacity="1"/><path d="M9 16 Q11.5 12, 16 19 Q20.5 26, 23 19" stroke-width="1.2" opacity="0.5"/><path d="M9 13 Q11.5 6, 16 13 Q20.5 20, 23 13" stroke-width="1.2" opacity="0.5"/><line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/><text x="16" y="8" font-size="5" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">Y</text></svg></span>
+      480V Wye Power Source
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="transformer" aria-label="Transformer tool - add a transformer component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 7 Q8 9.5, 4 12 Q8 14.5, 4 17 Q8 19.5, 4 22" stroke-width="1.8"/><line x1="4" y1="7" x2="4" y2="7"/><path d="M28 7 Q24 9.5, 28 12 Q24 14.5, 28 17 Q24 19.5, 28 22" stroke-width="1.8"/><line x1="14" y1="5" x2="14" y2="24" stroke-width="2"/><line x1="18" y1="5" x2="18" y2="24" stroke-width="2"/><line x1="4" y1="7" x2="2" y2="7" stroke-width="1.5"/><line x1="4" y1="22" x2="2" y2="22" stroke-width="1.5"/><line x1="28" y1="7" x2="30" y2="7" stroke-width="1.5"/><line x1="28" y1="22" x2="30" y2="22" stroke-width="1.5"/></svg></span>
+      Transformer
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="dc_source" aria-label="DC Battery - add a DC voltage source">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="16" x2="8" y2="16"/><line x1="8" y1="8" x2="8" y2="24" stroke-width="1.5"/><line x1="12" y1="11" x2="12" y2="21" stroke-width="3"/><line x1="16" y1="8" x2="16" y2="24" stroke-width="1.5"/><line x1="20" y1="11" x2="20" y2="21" stroke-width="3"/><line x1="24" y1="8" x2="24" y2="24" stroke-width="1.5"/><line x1="24" y1="16" x2="30" y2="16"/><text x="5" y="7" font-size="7" fill="currentColor" stroke="none" font-weight="bold">+</text><text x="26" y="7" font-size="7" fill="currentColor" stroke="none" font-weight="bold">−</text></svg></span>
+      DC Battery
+    </button>
+    <h2><span class="badge">Loads</span><span class="badge-help" data-tip="Components that consume power — resistors, bulbs, fans, capacitors, and outlets">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="resistor" aria-label="Resistor tool - add a resistor component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="16" x2="7" y2="16"/><rect x="7" y="11" width="18" height="10" rx="1" stroke-width="1.8"/><line x1="25" y1="16" x2="30" y2="16"/></svg></span>
+      Resistor
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="bulb" aria-label="Bulb tool - add a light bulb component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="16" cy="16" r="9" stroke-width="1.8"/><line x1="9.6" y1="9.6" x2="22.4" y2="22.4" stroke-width="1.5"/><line x1="22.4" y1="9.6" x2="9.6" y2="22.4" stroke-width="1.5"/><line x1="2" y1="16" x2="7" y2="16"/><line x1="25" y1="16" x2="30" y2="16"/></svg></span>
+      Light Bulb
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="fan" aria-label="Fan Motor tool - add a fan motor component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="16" cy="16" r="10" stroke-width="1.8"/><circle cx="16" cy="16" r="2" fill="currentColor" stroke="none"/><path d="M16 14 C17 10, 20 7, 22 7 C20 10, 18 13, 16.5 15Z" fill="currentColor" stroke="none"/><path d="M17.5 17 C20 18, 23 20, 23 22 C20 21, 17.5 19, 16.5 16.5Z" fill="currentColor" stroke="none"/><path d="M14.5 17 C12 18, 9 20, 9 22 C12 21, 14.5 19, 15.5 16.5Z" fill="currentColor" stroke="none"/><line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/></svg></span>
+      Fan Motor
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="capacitor" aria-label="Capacitor tool - add a capacitor component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="16" x2="13" y2="16" stroke-width="1.8"/><line x1="13" y1="7" x2="13" y2="25" stroke-width="2.8"/><line x1="19" y1="7" x2="19" y2="25" stroke-width="2.8"/><line x1="19" y1="16" x2="30" y2="16" stroke-width="1.8"/></svg></span>
+      Capacitor
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="outlet" aria-label="Outlet tool - add an electrical outlet">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <rect x="9" y="5" width="14" height="22" rx="2" stroke-width="1.5"/>
+        <line x1="13" y1="10" x2="13" y2="16" stroke-width="1.8"/>
+        <line x1="19" y1="10" x2="19" y2="16" stroke-width="1.8"/>
+        <path d="M14 20 Q16 23 18 20" stroke-width="1.5" fill="none"/>
+        <line x1="2" y1="16" x2="9" y2="16" stroke-width="1.5"/>
+        <line x1="23" y1="16" x2="30" y2="16" stroke-width="1.5"/>
+      </svg></span>
+      Outlet
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="compressor" aria-label="Compressor tool - add a compressor motor with CSR terminals">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <circle cx="16" cy="16" r="10" stroke-width="1.8"/>
+        <text x="16" y="14" text-anchor="middle" font-size="6" font-weight="bold" fill="currentColor" stroke="none" font-family="sans-serif">CSR</text>
+        <path d="M8 10 Q12 13 12 16" stroke-width="1.5" fill="none"/>
+        <path d="M8 22 Q12 19 12 16" stroke-width="1.5" fill="none"/>
+        <line x1="20" y1="16" x2="28" y2="16" stroke-width="1.5"/>
+      </svg></span>
+      Compressor
+    </button>
+    <h2><span class="badge">Switches</span><span class="badge-help" data-tip="Manual and timed switches that open or close a circuit path">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="switch" aria-label="Switch tool - add a switch component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="18" x2="8" y2="18"/><circle cx="8" cy="18" r="2.5" fill="currentColor"/><circle cx="24" cy="18" r="2.5" fill="currentColor"/><line x1="10.5" y1="18" x2="22" y2="10" stroke-width="2.2"/><line x1="24" y1="18" x2="30" y2="18"/></svg></span>
+      SPST Switch
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="dpdt" aria-label="DPDT switch - double pole double throw switch">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <line x1="2" y1="10" x2="8" y2="10"/><circle cx="8" cy="10" r="2" fill="currentColor"/><circle cx="24" cy="10" r="2" fill="currentColor"/><line x1="10" y1="10" x2="22" y2="4" stroke-width="2"/><line x1="24" y1="10" x2="30" y2="10"/>
+        <line x1="2" y1="24" x2="8" y2="24"/><circle cx="8" cy="24" r="2" fill="currentColor"/><circle cx="24" cy="24" r="2" fill="currentColor"/><line x1="10" y1="24" x2="22" y2="18" stroke-width="2"/><line x1="24" y1="24" x2="30" y2="24"/>
+        <line x1="16" y1="8" x2="16" y2="20" stroke-dasharray="2 2" stroke-width="1" opacity="0.5"/>
+      </svg></span>
+      DPDT Switch
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="time_delay" aria-label="Time delay tool - add a time delay relay">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="20" x2="8" y2="20"/><circle cx="8" cy="20" r="2.5" fill="currentColor"/><circle cx="24" cy="20" r="2.5" fill="currentColor"/><line x1="10.5" y1="20" x2="22" y2="12" stroke-width="2.2"/><line x1="24" y1="20" x2="30" y2="20"/><circle cx="16" cy="7" r="5" stroke-width="1.5"/><line x1="16" y1="4" x2="16" y2="7" stroke-width="1.5"/><line x1="16" y1="7" x2="18.5" y2="8" stroke-width="1.5"/></svg></span>
+      Time Delay Switch
+    </button>
+    <h2><span class="badge">Controls</span><span class="badge-help" data-tip="Contactors and relays — coil-operated contacts for remote circuit switching">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="contactor" aria-label="Contactor tool - add a contactor component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="5" width="12" height="10" rx="1.5" stroke-width="1.5"/><text x="9" y="13" font-size="8" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">M</text><circle cx="9" cy="24" r="2" fill="currentColor"/><circle cx="23" cy="24" r="2" fill="currentColor"/><line x1="11" y1="24" x2="21.5" y2="18" stroke-width="2"/><line x1="9" y1="15" x2="9" y2="22" stroke-dasharray="2 2" stroke-width="1"/><line x1="23" y1="24" x2="30" y2="24"/><line x1="9" y1="24" x2="2" y2="24"/></svg></span>
+      Single Pole Contactor
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="relay" aria-label="Relay tool - add a relay component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="5" width="12" height="10" rx="1.5" stroke-width="1.5"/><text x="9" y="13" font-size="8" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">R</text><circle cx="9" cy="24" r="2" fill="currentColor"/><circle cx="23" cy="24" r="2" fill="currentColor"/><line x1="11" y1="24" x2="21.5" y2="18" stroke-width="2"/><line x1="9" y1="15" x2="9" y2="22" stroke-dasharray="2 2" stroke-width="1"/><line x1="23" y1="24" x2="30" y2="24"/><line x1="9" y1="24" x2="2" y2="24"/></svg></span>
+      Relay (NO/NC)
+    </button>
+    <h2><span class="badge">O.C. Protection</span><span class="badge-help" data-tip="Overcurrent protection — fuses and breakers that disconnect when current exceeds safe limits">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="fuse" aria-label="Fuse tool - add a fuse component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="16" x2="7" y2="16"/><rect x="7" y="11" width="18" height="10" rx="1" stroke-width="1.8"/><path d="M10 16 Q13 10, 16 16 Q19 22, 22 16" stroke-width="1.5" fill="none"/><line x1="25" y1="16" x2="30" y2="16"/></svg></span>
+      High Voltage Fuse
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="lv_fuse" aria-label="Low voltage fuse tool - add a low voltage fuse">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="16" x2="7" y2="16"/><rect x="7" y="11" width="18" height="10" rx="1" stroke-width="1.8"/><path d="M10 16 Q13 10, 16 16 Q19 22, 22 16" stroke-width="1.5" fill="none"/><line x1="25" y1="16" x2="30" y2="16"/><text x="16" y="9" font-size="7" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">LV</text></svg></span>
+      Low Voltage Fuse
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="td_fuse" aria-label="Time delay fuse tool - add a time delay fuse">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="16" x2="7" y2="16"/><rect x="7" y="11" width="18" height="10" rx="1" stroke-width="1.8"/><path d="M10 16 Q13 10, 16 16 Q19 22, 22 16" stroke-width="1.5" fill="none"/><line x1="25" y1="16" x2="30" y2="16"/><text x="16" y="9" font-size="7" fill="currentColor" text-anchor="middle" stroke="none" font-weight="bold">TD</text></svg></span>
+      Time Delay Fuse
+    </button>
+    <button class="tool-btn" aria-pressed="false" data-tool="breaker" aria-label="Circuit breaker tool - add a circuit breaker component">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="8" y="4" width="16" height="24" rx="2" stroke-width="1.8"/><line x1="16" y1="10" x2="16" y2="19" stroke-width="3" stroke-linecap="round"/><circle cx="16" cy="23" r="2" fill="currentColor" stroke="none"/></svg></span>
+      Single Pole Breaker
+    </button>
+    <h2><span class="badge">Grounding</span><span class="badge-help" data-tip="Earth ground — provides a 0V reference and safety path for fault currents">i</span></h2>
+    <button class="tool-btn" aria-pressed="false" data-tool="earth_ground" aria-label="Earth Ground - connect to earth potential (0V reference)">
+      <span class="icon"><svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <line x1="16" y1="4" x2="16" y2="14" stroke-width="1.8"/>
+        <line x1="4" y1="14" x2="28" y2="14" stroke-width="2.5"/>
+        <line x1="8" y1="20" x2="24" y2="20" stroke-width="2.5"/>
+        <line x1="12" y1="26" x2="20" y2="26" stroke-width="2.5"/>
+      </svg></span>
+      Earth Ground
+    </button>
+  </div>
+    <div id="scroll-indicator"><span class="scroll-arrow">&#x25BC;</span></div>
+  <div id="toolbox">
+      <div id="toolbox-label">Technician's<br>Tool Bag</div>
+      <div id="toolbox-hub">
+        <img id="toolbox-bag" src="Assets/toolbox-bag.png" alt="Tool Bag" />
+        <div class="toolbox-item" style="--tx:164px;--ty:-32px;--tether-len:168px;--tether-angle:83deg;--delay:0.15s">
+          <div class="tether"></div>
+          <button id="btn-clipboard" draggable="false" ondragstart="return false">
+            <svg aria-hidden="true" viewBox="0 0 36 48" width="28" height="37" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Board body -->
+              <rect x="1" y="6" width="34" height="41" rx="2" fill="#8B5E3C" stroke="#5C3D1E" stroke-width="1.2"/>
+              <!-- Paper -->
+              <rect x="4" y="10" width="28" height="34" rx="1" fill="#FFFDE7"/>
+              <!-- Lines on paper -->
+              <line x1="7" y1="17" x2="29" y2="17" stroke="#BBDEFB" stroke-width="0.8"/>
+              <line x1="7" y1="21" x2="29" y2="21" stroke="#BBDEFB" stroke-width="0.8"/>
+              <line x1="7" y1="25" x2="29" y2="25" stroke="#BBDEFB" stroke-width="0.8"/>
+              <line x1="7" y1="29" x2="29" y2="29" stroke="#BBDEFB" stroke-width="0.8"/>
+              <line x1="7" y1="33" x2="29" y2="33" stroke="#BBDEFB" stroke-width="0.8"/>
+              <line x1="7" y1="37" x2="29" y2="37" stroke="#BBDEFB" stroke-width="0.8"/>
+              <!-- Clip base -->
+              <rect x="11" y="1" width="14" height="9" rx="2" fill="#9E9E9E" stroke="#616161" stroke-width="1"/>
+              <!-- Clip arm -->
+              <rect x="13" y="0" width="10" height="5" rx="1.5" fill="#BDBDBD" stroke="#757575" stroke-width="0.8"/>
+              <!-- Clip hole -->
+              <ellipse cx="18" cy="5" rx="3" ry="2.5" fill="#5C3D1E"/>
+            </svg>
+            Clipboard
+            <span class="bag-return-badge" id="badge-clipboard" title="Put back in bag">
+              <svg aria-hidden="true" viewBox="0 0 12 12" width="10" height="10" fill="none">
+                <path d="M9 3 L6 6 L3 3" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <line x1="6" y1="6" x2="6" y2="10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+        <div class="toolbox-item" style="--tx:138px;--ty:-91px;--tether-len:165px;--tether-angle:57deg;--delay:0.1s">
+          <div class="tether"></div>
+          <button id="btn-ncvt" draggable="false" ondragstart="return false" aria-label="Add non-contact voltage tester to circuit">
+            <svg aria-hidden="true" viewBox="0 0 20 54" width="13" height="36" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Cap -->
+              <rect x="4" y="0" width="12" height="7" rx="3" fill="#333" stroke="#111" stroke-width="0.8"/>
+              <!-- Body -->
+              <rect x="3" y="6" width="14" height="36" rx="2" fill="#FFD600" stroke="#E65100" stroke-width="1"/>
+              <!-- Top accent stripe -->
+              <rect x="3" y="6" width="14" height="7" rx="2" fill="#FF8F00" stroke="#E65100" stroke-width="1"/>
+              <!-- LED circle -->
+              <circle cx="10" cy="9.5" r="3.2" fill="#ff2222"/>
+              <circle cx="9" cy="8.5" r="1.4" fill="#ff9999" opacity="0.7"/>
+              <!-- Brand stripe -->
+              <rect x="3" y="27" width="14" height="4" fill="rgba(0,0,0,0.14)"/>
+              <text x="10" y="30.5" text-anchor="middle" font-size="3.2" font-weight="900" fill="#1a1a1a" font-family="sans-serif">TB</text>
+              <!-- Black tip body -->
+              <rect x="6" y="42" width="8" height="6" rx="1" fill="#1a1a1a"/>
+              <!-- Pointed tip -->
+              <polygon points="6,48 14,48 10,54" fill="#222"/>
+            </svg>
+            NCV Tester
+            <span class="bag-return-badge" id="badge-ncvt" title="Put back in bag">
+              <svg aria-hidden="true" viewBox="0 0 12 12" width="10" height="10" fill="none">
+                <path d="M9 3 L6 6 L3 3" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <line x1="6" y1="6" x2="6" y2="10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+        <div class="toolbox-item" style="--tx:78px;--ty:-145px;--tether-len:165px;--tether-angle:28deg;--delay:0.05s">
+          <div class="tether"></div>
+          <button id="btn-clamp" draggable="false" ondragstart="return false" aria-label="Add amp clamp to circuit">
+            <svg aria-hidden="true" viewBox="0 0 30 58" width="20" height="39" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Wire-pass-through window (light shows through jaw opening) -->
+              <path d="M10,23 L10,13 A5,5 0 0,0 20,13 L20,23 Z" fill="#b8d4e8" opacity="0.55"/>
+              <!-- Jaw ring: two same-winding filled paths + evenodd = horseshoe ring with transparent center -->
+              <path d="M5,23 L5,13 A10,10 0 0,0 25,13 L25,23 Z  M10,23 L10,13 A5,5 0 0,0 20,13 L20,23 Z"
+                    fill="#282828" fill-rule="evenodd"/>
+              <!-- Left arm inner highlight -->
+              <line x1="6.2" y1="13" x2="6.2" y2="22" stroke="#4a4a4a" stroke-width="0.8"/>
+              <!-- Jaw grip serration lines -->
+              <line x1="5" y1="20.5" x2="10" y2="20.5" stroke="#4a4a4a" stroke-width="0.7"/>
+              <line x1="20" y1="20.5" x2="25" y2="20.5" stroke="#4a4a4a" stroke-width="0.7"/>
+              <!-- Body -->
+              <rect x="3" y="23" width="24" height="33" rx="3" fill="#1c1c1c" stroke="#3a3a3a" stroke-width="0.8"/>
+              <!-- Amber header band (Fluke-style) -->
+              <rect x="3" y="23" width="24" height="7" rx="3" fill="#f59e0b"/>
+              <rect x="3" y="28" width="24" height="2" fill="#1c1c1c"/>
+              <!-- Brand text on amber header -->
+              <text x="15" y="27.2" text-anchor="middle" font-size="4" font-weight="900" fill="#1a1a1a" font-family="sans-serif">TB</text>
+              <!-- Display bezel -->
+              <rect x="5" y="30" width="20" height="11" rx="1.5" fill="#0d0d0d" stroke="#2a2a2a" stroke-width="0.5"/>
+              <!-- LCD screen -->
+              <rect x="6" y="31" width="18" height="9" rx="1" fill="#9ecfb0"/>
+              <!-- 3-digit LCD blocks -->
+              <rect x="7"    y="32.5" width="4" height="5.5" rx="0.5" fill="#1b5e20" opacity="0.62"/>
+              <rect x="12.5" y="32.5" width="4" height="5.5" rx="0.5" fill="#1b5e20" opacity="0.62"/>
+              <rect x="18"   y="32.5" width="3" height="5.5" rx="0.5" fill="#1b5e20" opacity="0.50"/>
+              <!-- HOLD / MIN-MAX buttons -->
+              <rect x="5"  y="43" width="9" height="3" rx="1.5" fill="#333" stroke="#4a4a4a" stroke-width="0.4"/>
+              <rect x="16" y="43" width="9" height="3" rx="1.5" fill="#333" stroke="#4a4a4a" stroke-width="0.4"/>
+              <!-- Probe jacks -->
+              <circle cx="10" cy="53.5" r="2" fill="#0d0d0d" stroke="#555" stroke-width="0.6"/>
+              <circle cx="20" cy="53.5" r="2" fill="#b91c1c" stroke="#7f1d1d" stroke-width="0.6"/>
+              <!-- Jaw trigger lever (left side) -->
+              <rect x="0.5" y="24" width="3" height="9" rx="1.5" fill="#f59e0b" stroke="#d97706" stroke-width="0.5"/>
+            </svg>
+            Amp Clamp
+            <span class="bag-return-badge" id="badge-clamp" title="Put back in bag">
+              <svg aria-hidden="true" viewBox="0 0 12 12" width="10" height="10" fill="none">
+                <path d="M9 3 L6 6 L3 3" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <line x1="6" y1="6" x2="6" y2="10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+        <div class="toolbox-item" style="--tx:-20px;--ty:-165px;--tether-len:166px;--tether-angle:-7deg;--delay:0s">
+          <div class="tether"></div>
+          <button id="btn-multimeter" draggable="false" ondragstart="return false" aria-label="Add digital multimeter to circuit">
+            <svg aria-hidden="true" viewBox="0 0 40 64" width="30" height="48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Body -->
+              <rect x="2" y="2" width="36" height="60" rx="4" fill="#2a2a2a" stroke="#555" stroke-width="1.5"/>
+              <!-- Yellow header band -->
+              <rect x="2" y="2" width="36" height="13" rx="4" fill="#f59e0b"/>
+              <rect x="2" y="11" width="36" height="4" fill="#f59e0b"/>
+              <!-- Brand text area -->
+              <text x="20" y="11" text-anchor="middle" font-size="5" font-weight="900" fill="#1a1a1a" font-family="sans-serif">TB</text>
+              <!-- LCD display -->
+              <rect x="6" y="17" width="28" height="14" rx="2" fill="#c8e6c9" stroke="#a5d6a7" stroke-width="0.8"/>
+              <text x="32" y="28" text-anchor="end" font-size="7" font-weight="700" fill="#1b5e20" font-family="monospace">---</text>
+              <!-- Mode buttons row -->
+              <rect x="6"  y="34" width="6" height="7" rx="1" fill="#f59e0b"/>
+              <rect x="14" y="34" width="6" height="7" rx="1" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+              <rect x="22" y="34" width="6" height="7" rx="1" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+              <rect x="30" y="34" width="4" height="7" rx="1" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+              <text x="9"  y="40" text-anchor="middle" font-size="4" fill="#1a1a1a" font-family="monospace">V~</text>
+              <text x="17" y="40" text-anchor="middle" font-size="4" fill="#aaa" font-family="monospace">V=</text>
+              <text x="25" y="40" text-anchor="middle" font-size="4" fill="#aaa" font-family="monospace">A~</text>
+              <text x="32" y="40" text-anchor="middle" font-size="4" fill="#aaa" font-family="monospace">Ω</text>
+              <!-- Jack holes -->
+              <rect x="4" y="46" width="32" height="12" rx="2" fill="#1a1a1a"/>
+              <circle cx="13" cy="52" r="3" fill="#111" stroke="#777" stroke-width="1"/>
+              <circle cx="27" cy="52" r="3" fill="#111" stroke="#e53e3e" stroke-width="1"/>
+              <text x="13" y="60" text-anchor="middle" font-size="3.5" fill="#888" font-family="sans-serif">COM</text>
+              <text x="27" y="60" text-anchor="middle" font-size="3.5" fill="#888" font-family="sans-serif">VΩ</text>
+              <!-- Red probe lead -->
+              <line x1="27" y1="55" x2="30" y2="64" stroke="#e53e3e" stroke-width="1.2" stroke-linecap="round"/>
+              <!-- Black probe lead -->
+              <line x1="13" y1="55" x2="10" y2="64" stroke="#555" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            Digital Multimeter
+            <span class="bag-return-badge" id="badge-multimeter" title="Put back in bag">
+              <svg aria-hidden="true" viewBox="0 0 12 12" width="10" height="10" fill="none">
+                <path d="M9 3 L6 6 L3 3" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <line x1="6" y1="6" x2="6" y2="10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="canvas-wrap" role="application" aria-label="Circuit drawing canvas">
+    <div id="caution-toast">
+      <span class="caution-icon">&#x26A0;&#xFE0F;</span>
+      <div>
+        <div class="caution-text">Circuit is energized!</div>
+        <div class="caution-sub">De-energize before editing</div>
+      </div>
+    </div>
+    <canvas id="circuit-canvas" tabindex="0" aria-label="Interactive circuit drawing area. Use mouse to draw, select, and manipulate components."></canvas>
+    <div id="props-panel" role="dialog" aria-modal="true" aria-label="Component properties editor">
+      <h3 id="props-title">Properties</h3>
+      <div id="props-body"></div>
+      <div class="btn-row">
+        <button id="props-close" aria-label="Close properties panel">Close</button>
+        <button id="props-delete" class="danger" aria-label="Delete this component">Delete</button>
+      </div>
+    </div>
+    <div id="context-menu" role="menu" aria-label="Component actions" aria-modal="false">
+      <button id="ctx-delete" role="menuitem" aria-label="Delete selected component">Delete</button>
+      <button id="ctx-props" role="menuitem" aria-label="Edit component properties">Properties</button>
+      <button id="ctx-rotate" role="menuitem" aria-label="Rotate component 90 degrees">Rotate 90°</button>
+      <button id="ctx-flip" role="menuitem" aria-label="Flip power source L1/N terminals" style="display:none">Flip L1 / N</button>
+    </div>
+    <div id="ghost-info" aria-hidden="true">Click to place — R to rotate</div>
+  </div>
+</div>
+
+<!-- Multimeter body -->
+<div id="multimeter" role="dialog" aria-modal="true" aria-label="Digital multimeter">
+  <!-- 4 decorative corner screws -->
+  <div class="meter-screw tl"></div>
+  <div class="meter-screw tr"></div>
+  <div class="meter-screw bl"></div><div class="meter-screw br"></div>
+
+  <button id="meter-close" title="Close multimeter" aria-label="Close multimeter">&#x2715;</button>
+
+  <!-- Drag handle / header band -->
+  <div id="meter-header">
+    <div class="meter-brand"><span class="brand-trade">TRADE</span><span class="brand-built">BUILT</span></div>
+    <div class="meter-model">Digital Multimeter</div>
+  </div>
+
+  <!-- LCD Display -->
+  <div id="meter-display-wrap">
+    <div id="meter-display">---<span id="meter-unit"></span></div>
+    <div id="meter-range-label">AUTO</div>
+    <div id="meter-inrush-label"></div>
+  </div>
+
+  <!-- Mode buttons — real DMM symbols -->
+  <div id="meter-modes" role="group" aria-label="Measurement mode selection">
+    <button class="active" data-mode="vac" title="AC Voltage" aria-label="AC voltage measurement">
+      <span class="mode-symbol">V~</span><span class="mode-label">AC</span>
+    </button>
+    <button data-mode="vdc" title="DC Voltage" aria-label="DC voltage measurement">
+      <span class="mode-symbol">V&#x2393;</span><span class="mode-label">DC</span>
+    </button>
+    <button data-mode="aac" title="AC Current" aria-label="AC current measurement">
+      <span class="mode-symbol">A~</span><span class="mode-label">Amps</span>
+    </button>
+    <button data-mode="ohm" title="Resistance" aria-label="Resistance measurement">
+      <span class="mode-symbol">&#937;</span><span class="mode-label">Ohms</span>
+    </button>
+    <button data-mode="cap" title="Capacitance" aria-label="Capacitance measurement">
+      <span class="mode-symbol">&#181;F</span><span class="mode-label">Cap</span>
+    </button>
+  </div>
+
+  <!-- Inrush button — below mode buttons -->
+  <div id="meter-inrush-wrap">
+    <button id="meter-inrush-btn" title="Inrush peak hold — captures maximum inrush current">INRUSH</button>
+  </div>
+
+  <!-- Status line -->
+  <div id="meter-status" aria-label="Multimeter status" role="status">Drag probes to measure</div>
+
+  <!-- Probe jack area -->
+  <div id="meter-jacks">
+    <div class="meter-jack" id="jack-black">
+      <div class="jack-hole"></div>
+      <div class="jack-label">COM</div>
+    </div>
+    <div class="meter-jack" id="jack-red">
+      <div class="jack-hole"></div>
+      <div class="jack-label">V&#937;mA</div>
+    </div>
+  </div>
+</div>
+
+<!-- SVG overlay for probe tether wires -->
+<svg aria-hidden="true" id="probe-svg" style="position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:16;">
+  <defs>
+    <filter id="wire-glow">
+      <feGaussianBlur stdDeviation="1.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <path id="tether-black" stroke="#222" stroke-width="3" fill="none" stroke-linecap="round" opacity="0"/>
+  <path id="tether-red" stroke="#e53e3e" stroke-width="3" fill="none" stroke-linecap="round" opacity="0"/>
+  <path id="tether-ncvt" stroke="#E65100" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-dasharray="6 4" opacity="0"/>
+  <!-- Probe tip indicators on canvas -->
+  <circle id="probe-dot-black" r="7" fill="#222" stroke="#fff" stroke-width="2" opacity="0"/>
+  <circle id="probe-dot-red" r="7" fill="#e53e3e" stroke="#fff" stroke-width="2" opacity="0"/>
+  <circle id="probe-dot-ncvt" r="6" fill="#FF8F00" stroke="#fff" stroke-width="2" opacity="0"/>
+</svg>
+
+<!-- Draggable probe tips -->
+<div id="probe-black" class="probe-tip" style="background:#222;border-color:#555;" draggable="false">
+  <div class="probe-tip-needle"></div>
+</div>
+<div id="probe-red" class="probe-tip" style="background:#e53e3e;border-color:#c53030;" draggable="false">
+  <div class="probe-tip-needle"></div>
+</div>
+
+<!-- NCV Tester Panel -->
+<div id="ncvt-panel" role="dialog" aria-modal="true" aria-label="Non-contact voltage tester">
+  <div id="ncvt-header">
+    <span id="ncvt-title">NCV</span>
+    <div style="display:flex;align-items:center;gap:3px;">
+      <button id="ncvt-close">&#x2715;</button>
+    </div>
+  </div>
+  <div id="ncvt-led-window"><div id="ncvt-led-fill"></div></div>
+  <div id="ncvt-status-text"></div>
+  <div id="ncvt-ranges">
+    <div class="ncvt-range-row" id="ncvt-ind-high">
+      <div class="ncvt-dot"></div>
+      <div class="ncvt-range-text">90V-1000V</div>
+    </div>
+    <div class="ncvt-range-row" id="ncvt-ind-low">
+      <div class="ncvt-dot"></div>
+      <div class="ncvt-range-text">12V-90V</div>
+    </div>
+  </div>
+  <div id="ncvt-brand-strip"><span class="ncvt-brand-trade">TRADE</span><span class="ncvt-brand-built">BUILT</span></div>
+  <div class="ncvt-hint">Use target to<br>detect voltage</div>
+  <div id="ncvt-tip-section">
+    <div id="ncvt-tip-body"></div>
+    <div id="ncvt-tip-point"></div>
+  </div>
+</div>
+
+<!-- NCV Tester draggable probe tip -->
+<div id="ncvt-probe-tip" draggable="false">
+  <svg aria-hidden="true" viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.8" stroke-linecap="round">
+    <circle cx="10" cy="10" r="6"/>
+    <line x1="10" y1="1" x2="10" y2="4"/>
+    <line x1="10" y1="16" x2="10" y2="19"/>
+    <line x1="1" y1="10" x2="4" y2="10"/>
+    <line x1="16" y1="10" x2="19" y2="10"/>
+    <circle cx="10" cy="10" r="1.5" fill="rgba(255,255,255,0.9)" stroke="none"/>
+  </svg>
+</div>
+
+<!-- Clamp Meter Panel -->
+<div id="clamp-meter" role="dialog" aria-modal="true" aria-label="Clamp meter">
+  <div id="clamp-header">
+    <span id="clamp-title">CLAMP</span>
+    <div style="display:flex;align-items:center;gap:3px;">
+      <button id="clamp-close" title="Close clamp meter" aria-label="Close clamp meter">&#x2715;</button>
+    </div>
+  </div>
+  <div id="clamp-brand"><span class="brand-trade">TRADE</span><span class="brand-built">BUILT</span></div>
+  <div id="clamp-display-wrap">
+    <div id="clamp-inrush-label"></div>
+    <div id="clamp-display">---<span id="clamp-unit"></span></div>
+    <div id="clamp-mode-label">AC AMPS</div>
+  </div>
+  <div id="clamp-inrush-wrap"><button id="clamp-inrush-btn" title="Inrush peak hold">INRUSH</button></div>
+  <div id="clamp-status">Clamp jaw over a wire</div>
+  <div id="clamp-jaw-section">
+    <div id="clamp-jaw-label">&#x2193; JAW</div>
+  </div>
+</div>
+
+<!-- Clamp Meter draggable jaw -->
+<div id="clamp-jaw" draggable="false" title="Drag jaw over a wire to measure current">
+  <svg aria-hidden="true" viewBox="0 0 32 32" width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <!-- Jaw body circle -->
+    <circle cx="16" cy="16" r="15" fill="#d97706" stroke="#92400e" stroke-width="1.5"/>
+    <!-- C-clamp jaw shape -->
+    <path d="M22 8 Q28 8 28 16 Q28 24 22 24" stroke="#1a1a1a" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+    <path d="M22 8 L10 8 L10 24 L22 24" stroke="#1a1a1a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <!-- Center dot -->
+    <circle cx="16" cy="16" r="2.5" fill="#1a1a1a" opacity="0.6"/>
+  </svg>
+</div>
+
+<!-- Clamp Meter tether SVG -->
+<svg id="clamp-tether" pointer-events="none">
+  <line id="clamp-tether-line" x1="0" y1="0" x2="0" y2="0"
+    stroke="rgba(245,158,11,0.4)" stroke-width="1.5" stroke-dasharray="5,4"/>
+</svg>
+
+<!-- Clipboard Panel -->
+<div id="clipboard-panel" role="dialog" aria-label="Technician notes">
+  <div class="cb-resize" data-dir="n"></div>
+  <div class="cb-resize" data-dir="s"></div>
+  <div class="cb-resize" data-dir="e"></div>
+  <div class="cb-resize" data-dir="w"></div>
+  <div id="clipboard-drag-handle">
+    <div id="clipboard-clip">
+      <div id="clipboard-clip-arm"></div>
+      <div id="clipboard-clip-body">
+        <div id="clipboard-clip-hole"></div>
+      </div>
+    </div>
+    <div id="clipboard-tb-sticker">
+      <svg aria-hidden="true" id="sticker-bolt" viewBox="0 0 14 24" width="11" height="19" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Lightning bolt -->
+        <polygon points="9,0 3,13 7,13 5,24 12,10 8,10" fill="#f0c500" stroke="#c49b00" stroke-width="0.6" stroke-linejoin="round"/>
+        <!-- Inner highlight -->
+        <polygon points="9,1.5 4.5,12 7.5,12" fill="rgba(255,255,255,0.3)" stroke="none"/>
+      </svg>
+      <div style="display:flex;flex-direction:column;">
+        <span class="sticker-line1">Trade</span>
+        <span class="sticker-divider"></span>
+        <span class="sticker-line2">Built</span>
+      </div>
+    </div>
+  </div>
+  <div id="clipboard-paper">
+    <div id="clipboard-paper-header">
+      <span id="clipboard-paper-title">Technician's Notes</span>
+      <div style="display:flex;align-items:center;gap:3px;">
+        <button id="clipboard-close" title="Close" aria-label="Close clipboard">&#x2715;</button>
+      </div>
+    </div>
+    <div id="clipboard-pages-container"></div>
+    <div class="clipboard-divider"></div>
+    <div id="clipboard-page-nav"><button class="clip-prev" aria-label="Previous page">&#x25C0;</button>
+      <span class="clip-page-label">Pg. 1 / 1</span>
+      <button class="clip-next" aria-label="Next page">&#x25B6;</button>
+    </div>
+    <button id="clipboard-add-page" aria-label="Add new page to clipboard">+ Add Page</button>
+  </div>
+</div>
+
+<div id="statusbar" role="status" aria-live="polite">Ready — Select a tool and click the grid to build your circuit.</div>
+
+<!-- Split from app.js — loaded in dependency order (no ES modules) -->
+<script src="state.js"></script>
+<script src="workspace.js"></script>
+<script src="wires.js"></script>
+<script src="components.js"></script>
+<script src="symbols.js"></script>
+<script src="inputs.js"></script>
+<script src="solver.js"></script>
+<script src="multimeter.js"></script>
+<script src="ui.js"></script>
+<script src="tools.js"></script>
+<script src="engine.js"></script>
+
+<script>
+(function () {
+  const loader  = document.getElementById('tb-loader');
+  const bar     = document.getElementById('tb-loader-bar');
+  const status  = document.getElementById('tb-loader-status');
+
+  /* Animate the progress bar through staged messages */
+  const stages = [
+    { pct: 18,  msg: 'Loading components\u2026' },
+    { pct: 42,  msg: 'Building workspace\u2026' },
+    { pct: 67,  msg: 'Starting solver\u2026'    },
+    { pct: 85,  msg: 'Calibrating engine\u2026' },
+    { pct: 94,  msg: 'Almost ready\u2026'       },
+  ];
+  let s = 0;
+  const tick = setInterval(() => {
+    if (s < stages.length) {
+      bar.style.width    = stages[s].pct + '%';
+      status.textContent = stages[s].msg;
+      s++;
+    }
+  }, 420);
+
+  /* Dismiss once everything is loaded */
+  window.addEventListener('load', () => {
+    clearInterval(tick);
+    bar.style.width    = '100%';
+    status.textContent = 'Ready.';
+    setTimeout(() => { loader.classList.add('hidden'); }, 700);
+  });
+})();
+</script>
+
+<div id="badge-tooltip"></div>
+<script>
+(function(){
+  const tip = document.getElementById('badge-tooltip');
+  document.querySelectorAll('.badge-help').forEach(el => {
+    el.addEventListener('mouseenter', e => {
+      const r = el.getBoundingClientRect();
+      tip.textContent = el.dataset.tip;
+      tip.style.left = (r.right + 6) + 'px';
+      tip.style.top = (r.top + r.height/2 - 12) + 'px';
+      tip.classList.add('show');
+    });
+    el.addEventListener('mouseleave', () => tip.classList.remove('show'));
+  });
+})();
+</script>
+
+<footer style="text-align:center;padding:4px 0;font-size:13px;color:#000;background-color:#d3d3d3;">&copy; 2026 TradeBuilt&#8482; &middot; All Rights Reserved &nbsp;|&nbsp; Created and Designed by Kenneth J. Thompson</footer>
+</body>
+</html>

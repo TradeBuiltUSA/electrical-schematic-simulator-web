@@ -279,6 +279,9 @@
     { label: 'One capital letter (A–Z)',
       need:  'one capital letter',
       test:  v => /[A-Z]/.test(v) },
+    { label: 'One number (0–9)',
+      need:  'one number',
+      test:  v => /[0-9]/.test(v) },
     { label: 'One special character (! ? # $ …)',
       need:  'one special character',
       test:  v => /[^A-Za-z0-9\s]/.test(v) }

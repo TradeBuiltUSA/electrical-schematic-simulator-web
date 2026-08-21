@@ -222,7 +222,7 @@ let showInfo = true;
 let showStatus = true;
 let showComments = true;
 let showElectrons = true;
-let showEnergizedColors = true;
+let showEnergizedColors = false;
 let showFaults = true;
 
 // Comment box drawing

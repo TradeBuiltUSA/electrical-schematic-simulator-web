@@ -31,6 +31,7 @@
 
   const SDK_BASE     = 'https://www.gstatic.com/firebasejs/10.14.1/';
   const MIN_PASSWORD = 8;      // Firebase itself only enforces 6
+  const MAX_PASSWORD = 16;     // matches the project's backend policy
   const RESEND_WAIT  = 45;     // seconds between verification emails
   const VERIFY_POLL  = 6000;   // how often the verify screen re-checks
   const BOOT_TIMEOUT = 15000;  // give up on "checking" and offer a way out
@@ -272,10 +273,22 @@
      is invisible in a masked field — the kind of password that works once and
      never again.
      ──────────────────────────────────────────────────────────────────────── */
+  /* The exact set the backend counts as special. Not "anything that is not a
+     letter or a digit": Identity Platform publishes a fixed allowlist, and a
+     wider rule here would paint the checklist green on a password Firebase
+     then rejects. "Passw0rd+" was the case that found this — '+' is not on
+     the list, and neither is '=', an accent, or an emoji. */
+  const SPECIAL_CHARACTER = /[\^$*.\[\]{}()?"!@#%&\/\\,><':;|_~`-]/;
+
   const PASSWORD_RULES = [
     { label: 'At least ' + MIN_PASSWORD + ' characters',
       need:  'at least ' + MIN_PASSWORD + ' characters',
       test:  v => v.length >= MIN_PASSWORD },
+    /* legacy: false — see passwordMeetsLegacyRules(). */
+    { label: 'No more than ' + MAX_PASSWORD + ' characters',
+      need:  'no more than ' + MAX_PASSWORD + ' characters',
+      test:  v => v.length <= MAX_PASSWORD,
+      legacy: false },
     { label: 'One capital letter (A–Z)',
       need:  'one capital letter',
       test:  v => /[A-Z]/.test(v) },
@@ -284,11 +297,22 @@
       test:  v => /[0-9]/.test(v) },
     { label: 'One special character (! ? # $ …)',
       need:  'one special character',
-      test:  v => /[^A-Za-z0-9\s]/.test(v) }
+      test:  v => SPECIAL_CHARACTER.test(v) }
   ];
 
+  /* Choosing a password: every rule applies. */
   function passwordMeetsRules(v) {
     return PASSWORD_RULES.every(r => r.test(v));
+  }
+
+  /* Judging a password that already exists, which is a different question.
+     A password longer than the cap is not a weak one — it is a strong one
+     that predates the cap, and marching its owner through the update gate
+     would force them to trade length for compliance. The ceiling binds where
+     a password is being chosen; it is never applied retroactively. Every
+     other rule is a genuine weakness and does apply. */
+  function passwordMeetsLegacyRules(v) {
+    return PASSWORD_RULES.every(r => r.legacy === false || r.test(v));
   }
 
   /* The checklist under the password field. Two behaviours are load-bearing:
@@ -583,7 +607,7 @@
          this app, and so the only place it can be measured against the
          rules. Set before the call below, because onAuthStateChanged can
          fire before that promise resolves. */
-      mustUpdatePassword = !passwordMeetsRules(password);
+      mustUpdatePassword = !passwordMeetsLegacyRules(password);
 
       setBusy(form, true, 'Signing in…');
       /* Persistence has to be set before the sign-in call, not after. */

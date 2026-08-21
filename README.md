@@ -33,8 +33,9 @@ for the full walkthrough.
 
 This repo is the **published web build** of the simulator, deployed to GitHub
 Pages from `main`. It is generated from a private development repository, so
-please open an issue here rather than sending a pull request — changes are made
-upstream.
+please open an issue here for bugs or feedback rather than sending a pull
+request — changes are made upstream. For licensing or permission requests, use
+the email address below instead.
 
 The simulator is intended to be used at its hosted address:
 <https://tradebuiltusa.github.io/electrical-schematic-simulator-web/>
@@ -64,9 +65,11 @@ the hosted TradeBuilt Electrical Schematic Simulator as intended. No rights in
 the TradeBuilt name or logo are granted. Rights that applicable law gives you
 regardless of this notice — such as fair use — are unaffected.
 
-The full notice is in [COPYRIGHT](COPYRIGHT). To request permission for any
-other use, please
-[open an issue](https://github.com/TradeBuiltUSA/electrical-schematic-simulator-web/issues).
+The source code is publicly viewable — it must be, for the app to run in your
+browser — but it has not been licensed for reuse.
+
+The full notice is in [COPYRIGHT](COPYRIGHT). For licensing, redistribution,
+commercial use, or other permission requests, contact **tradebuiltusa@gmail.com**.
 
 ---
 

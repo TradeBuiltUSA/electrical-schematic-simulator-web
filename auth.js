@@ -460,7 +460,9 @@
       case 'auth/email-already-in-use':
         return 'An account already exists for that email. Try signing in instead.';
       case 'auth/weak-password':
-        return 'Choose a password at least ' + MIN_PASSWORD + ' characters long.';
+        /* Read off the same table the checklist draws, so a rule added there
+           cannot leave this sentence quietly describing the old policy. */
+        return 'Choose a password with ' + PASSWORD_RULES.map(r => r.need).join(', ') + '.';
       case 'auth/too-many-requests':
         return 'Too many attempts from this device. Wait a few minutes and try again.';
       case 'auth/network-request-failed':
@@ -484,6 +486,22 @@
 
   let auth   = null;
   let timers = [];
+
+  /* Set at sign-in when the password typed does not meet PASSWORD_RULES, and
+     the reason the rules reach accounts that predate them. A flag rather than
+     the password itself: updatePassword() never needs the old one, and a
+     plaintext password should not outlive the screen it was typed on.
+
+     In memory only, and deliberately so. It is scoped to one authentication
+     flow and dies with the page, because a durable record of "this password
+     was fine" is exactly the thing an attacker would edit. Nothing on disk is
+     ever consulted to let someone in — see the persistence note in
+     signInView() for how a reload is kept from doing the same job. */
+  let mustUpdatePassword = false;
+
+  /* What the visitor asked for with "Keep me signed in", held so it can be
+     handed back after a forced password update. */
+  let chosenPersistence = null;
 
   /* Views own intervals (the verify screen polls, and its resend button counts
      down). Anything a view starts goes through track() so leaving the view
@@ -561,15 +579,34 @@
         return;
       }
 
+      /* The only place an existing account's password is ever visible to
+         this app, and so the only place it can be measured against the
+         rules. Set before the call below, because onAuthStateChanged can
+         fire before that promise resolves. */
+      mustUpdatePassword = !passwordMeetsRules(password);
+
       setBusy(form, true, 'Signing in…');
       /* Persistence has to be set before the sign-in call, not after. */
-      const mode = remember.checked
+      chosenPersistence = remember.checked
         ? firebase.auth.Auth.Persistence.LOCAL
         : firebase.auth.Auth.Persistence.SESSION;
+
+      /* A password that fails the rules buys an in-memory session and nothing
+         more. Firebase writes the session down the instant sign-in succeeds,
+         so a durable one would hand the visitor a way around the update gate
+         that needs no tampering at all: press reload, and the SDK reports them
+         signed in while the verdict above dies with the old page. NONE makes a
+         reload mean re-authenticate, and re-authenticating means being caught
+         again. Nobody who is admitted loses the persistence they asked for —
+         it is restored the moment the new password is accepted. */
+      const mode = mustUpdatePassword
+        ? firebase.auth.Auth.Persistence.NONE
+        : chosenPersistence;
 
       auth.setPersistence(mode)
         .then(() => auth.signInWithEmailAndPassword(address, password))
         .catch(err => {
+          mustUpdatePassword = false;      // nobody got in; nothing to enforce
           setBusy(form, false);
           msg.textContent = messageFor(err);
           pass.input.value = '';
@@ -760,6 +797,12 @@
       focus: email.input,
       nodes: [
         sub('Enter your email and we will send you a link to set a new password.'),
+        /* The reset page itself is hosted by Firebase and enforces only its
+           own six-character minimum, so the rules are stated here instead.
+           A password chosen below them still gets caught at the next sign-in;
+           saying so up front saves the round trip. */
+        note('Your new password will need ' +
+             PASSWORD_RULES.map(r => r.need).join(', ') + '.'),
         form,
         el('p', { class: 'tb-foot' }, [
           linkBtn('Back to sign in', () => show(signInView, { email: email.input.value.trim() }))
@@ -817,7 +860,7 @@
       current.reload().then(() => {
         const fresh = auth.currentUser;
         if (fresh && fresh.emailVerified) {
-          admit(fresh);
+          proceed(fresh);
         } else if (!quiet) {
           msg.textContent = 'Not verified yet. Open the link in the email, then try again.';
         }
@@ -849,6 +892,93 @@
         resend,
         el('p', { class: 'tb-foot' }, [
           linkBtn('Use a different account', () => auth.signOut())
+        ])
+      ]
+    };
+  }
+
+  /* ── Forced password update ──────────────────────────────────────────────
+     The rules are enforced for accounts that predate them here rather than at
+     sign-up, because this is the only screen that knows an existing password
+     failed them. The visitor is signed in at this point; they simply are not
+     admitted until they set a compliant password. Signing out is the way
+     past it, not a skip button — a skip would make the rules advisory.
+     ──────────────────────────────────────────────────────────────────────── */
+  function updatePasswordView(ctx) {
+    const user = ctx.user;
+
+    const pass = field({ name: 'newPassword', label: 'New password',
+                         type: 'password', autocomplete: 'new-password' });
+    const conf = field({ name: 'confirm', label: 'Confirm new password',
+                         type: 'password', autocomplete: 'new-password' });
+
+    const rules = passwordChecklist(pass);
+    const match = matchIndicator(pass, conf);
+    const msg   = alertLine();
+
+    const form = el('form', { class: 'tb-form', novalidate: true }, [
+      pass.row, conf.row, msg, primary('Update password')
+    ]);
+
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      msg.textContent = '';
+      const next = pass.input.value;
+
+      rules.arm();
+      match.arm();
+
+      if (!passwordMeetsRules(next)) {
+        setFieldError(pass, rules.missing());
+        pass.input.focus();
+        return;
+      }
+      if (conf.input.value !== next) {
+        setFieldError(conf, 'Both passwords must match.');
+        conf.input.focus();
+        return;
+      }
+
+      setBusy(form, true, 'Updating…');
+      const current = auth.currentUser || user;
+
+      current.updatePassword(next)
+        .then(() => {
+          mustUpdatePassword = false;
+          /* Hand back the session they actually asked for, now that the
+             password has earned one. Best effort on purpose: if the switch
+             does not take, the cost is one extra sign-in next visit — never a
+             lockout, and never a way in. */
+          const restored = chosenPersistence
+            ? auth.setPersistence(chosenPersistence).catch(() => {})
+            : Promise.resolve();
+          return restored.then(() => { admit(current); });
+        })
+        .catch(err => {
+          setBusy(form, false);
+          /* The sign-in behind this is minutes old at most, but a detour
+             through email verification can still age it past Firebase's
+             limit. Send them back rather than leaving them stuck here. */
+          if (err && err.code === 'auth/requires-recent-login') {
+            msg.textContent = 'For your security, sign in once more to set a new password.';
+            setTimeout(() => { if (auth) auth.signOut(); }, 2500);
+            return;
+          }
+          msg.textContent = messageFor(err);
+          console.warn('[auth]', err && err.code);
+        });
+    });
+
+    return {
+      state: 'password-update',
+      focus: pass.input,
+      nodes: [
+        sub('Update your password to continue.'),
+        note('Password requirements have changed since this account was created. ' +
+             'Choose a new password that meets them — you only have to do this once.'),
+        form,
+        el('p', { class: 'tb-foot' }, [
+          linkBtn('Sign out', () => { if (auth) auth.signOut(); })
         ])
       ]
     };
@@ -923,25 +1053,44 @@
     if (signOutBtn) signOutBtn.hidden = false;
   }
 
+  function hasPassword(user) {
+    return (user.providerData || []).some(p => p && p.providerId === 'password');
+  }
+
   /* Google vouches for its own addresses; only password accounts have an
      unverified state worth stopping for. */
   function needsVerification(user) {
     if (user.emailVerified) return false;
-    return (user.providerData || []).some(p => p && p.providerId === 'password');
+    return hasPassword(user);
+  }
+
+  /* The single admission decision. Every path that could let someone in runs
+     through here, so a new gate cannot be added to one route and missed on
+     another — the verify screen used to call admit() directly, and would have
+     walked straight past the password check. */
+  function proceed(user) {
+    if (needsVerification(user)) {
+      show(verifyView, { user: user });
+      return;
+    }
+    /* A Google account has no password to hold to the rules. */
+    if (mustUpdatePassword && hasPassword(user)) {
+      show(updatePasswordView, { user: user });
+      return;
+    }
+    mustUpdatePassword = false;
+    admit(user);
   }
 
   function onUser(user) {
     if (!user) {
+      mustUpdatePassword = false;
       if (accountEl) accountEl.hidden = true;
       if (signOutBtn) signOutBtn.hidden = true;
       show(signInView, {});
       return;
     }
-    if (needsVerification(user)) {
-      show(verifyView, { user: user });
-      return;
-    }
-    admit(user);
+    proceed(user);
   }
 
   if (signOutBtn) {

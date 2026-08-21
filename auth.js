@@ -317,10 +317,11 @@
 
   /* The checklist under the password field. Two behaviours are load-bearing:
 
-     • It stays neutral until the visitor leaves the field or presses the
-       submit button. Painting a half-typed password red on the second
-       keystroke reads as scolding, and every password is invalid on its way
-       to being valid.
+     • It stays wholly neutral until the visitor types something — an empty
+       field is graded neither green nor red, whatever they have pressed —
+       and no rule is marked red until they leave the field or press submit.
+       Painting a half-typed password red on the second keystroke reads as
+       scolding, and every password is invalid on its way to being valid.
 
      • The rules reach a screen reader through aria-describedby, not through a
        live region. Three rules re-announced on every keystroke is unusable
@@ -356,12 +357,16 @@
       const v = f.input.value;
       allMet = true;
       for (const item of items) {
-        const met = item.rule.test(v);
+        /* An empty field has met nothing. Without this the ceiling rule —
+           the one rule an empty string satisfies — sits checked and green
+           under a field the visitor has not typed in yet. The checklist
+           stays grey until there is a password to judge. */
+        const met = !!v && item.rule.test(v);
         if (met !== item.met) {
           item.met = met;
           item.mark.innerHTML = met ? CHECK_MARK : DOT_MARK;   // constant markup
         }
-        item.li.dataset.state = met ? 'met' : (armed ? 'missing' : 'pending');
+        item.li.dataset.state = met ? 'met' : (armed && v ? 'missing' : 'pending');
         if (!met) allMet = false;
       }
       /* Only on the transition — rewriting the same sentence makes some
@@ -391,6 +396,9 @@
       ok:  () => allMet,
       /* What to put in the field error when submit is refused. */
       missing: () => {
+        /* Nothing typed is not five broken rules — say the one useful thing
+           instead of pointing at a checklist that is deliberately still grey. */
+        if (!f.input.value) return 'Enter a password.';
         const gap = PASSWORD_RULES.filter(r => !r.test(f.input.value));
         /* Each rule carries its own sentence form: lowercasing the label
            would turn "(A–Z)" into "(a–z)". */

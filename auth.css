@@ -345,8 +345,10 @@
 
 /* Live password requirements. Three states, and the middle one matters:
    "pending" is a rule not reached yet, and stays muted — a half-typed
-   password is not a wrong one. Red is reserved for "missing", which the form
-   only switches on once the visitor has left the field or pressed submit. */
+   password is not a wrong one, and an empty field is every rule's pending
+   state, so the whole list reads grey until the visitor types. Red is
+   reserved for "missing", which the form only switches on once the visitor
+   has left the field or pressed submit. */
 #tb-auth .tb-reqs {
   display: flex;
   flex-direction: column;

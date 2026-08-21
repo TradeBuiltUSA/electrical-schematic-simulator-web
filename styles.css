@@ -978,8 +978,7 @@ body {
 
 /* Respect the OS "reduce motion" setting for the decorative animations */
 @media (prefers-reduced-motion: reduce) {
-  #topbar-logo:hover, #topbar-logo.flip,
-  #tb-loader-logo, #tb-loader-logo-wrap::before { animation: none !important; }
+  #topbar-logo:hover, #topbar-logo.flip { animation: none !important; }
   * { scroll-behavior: auto !important; }
 }
 /* Focus indicators for keyboard accessibility */

@@ -30,34 +30,6 @@
 </head>
 <body>
 
-<!-- ── Loading screen (hidden instantly on refresh) ── -->
-<script>
-/* Skip the splash on a refresh. performance.navigation is deprecated and is
-   absent in some browsers (reading .type off undefined threw); the Navigation
-   Timing Level 2 entry is the supported form, with the legacy API as fallback. */
-(function(){
-  var reload = false;
-  try {
-    var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
-    if (nav) reload = nav.type === 'reload';
-    else if (performance.navigation) reload = performance.navigation.type === 1;
-  } catch (e) {}
-  if (reload) document.write('<style>#tb-loader{display:none!important}</style>');
-})();
-</script>
-<div id="tb-loader">
-  <div id="tb-loader-inner">
-    <div id="tb-loader-logo-wrap">
-      <img src="Assets/topbar-logo.png" alt="TradeBuilt" id="tb-loader-logo">
-    </div>
-    <p id="tb-loader-label">Electrical Schematic Simulator</p>
-    <div id="tb-loader-bar-track">
-      <div id="tb-loader-bar"></div>
-    </div>
-    <p id="tb-loader-status">Initializing simulator&hellip;</p>
-  </div>
-</div>
-
 <!-- ── Sign-in gate ──
      Only the cover and the card frame live here, so the overlay paints before
      any script runs. auth.js builds the forms into #tb-auth-body; keeping them
@@ -83,87 +55,6 @@
     </footer>
   </div>
 </div>
-
-<style>
-#tb-loader {
-  position: fixed;
-  inset: 0;
-  z-index: 99999;
-  background: #080b14;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: opacity 0.55s ease, visibility 0.55s ease;
-}
-#tb-loader.hidden {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
-#tb-loader-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 18px;
-}
-#tb-loader-logo-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-#tb-loader-logo-wrap::before {
-  content: '';
-  position: absolute;
-  inset: -24px;
-  background: radial-gradient(ellipse 80% 60% at 50% 50%,
-    rgba(245, 158, 11, 0.22) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: loaderPulse 2s ease-in-out infinite;
-}
-#tb-loader-logo {
-  height: 80px;
-  border-radius: 14px;
-  filter:
-    drop-shadow(0 0 28px rgba(245, 158, 11, 0.55))
-    drop-shadow(0 0 8px rgba(245, 158, 11, 0.35));
-  animation: loaderPulse 2s ease-in-out infinite;
-}
-#tb-loader-label {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(245, 158, 11, 0.85);
-  margin-top: 4px;
-}
-#tb-loader-bar-track {
-  width: 200px;
-  height: 3px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 99px;
-  overflow: hidden;
-}
-#tb-loader-bar {
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(90deg, #f59e0b, #fbbf24);
-  border-radius: 99px;
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.6);
-  transition: width 0.3s ease;
-}
-#tb-loader-status {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.3);
-  letter-spacing: 0.04em;
-}
-@keyframes loaderPulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.75; }
-}
-</style>
 
 <div id="sr-announce" aria-live="assertive" aria-atomic="true" class="sr-only"></div>
 <div id="topbar" role="toolbar" aria-label="Circuit simulator toolbar">
@@ -763,40 +654,7 @@
      files are cached independently of this page, so a bare URL lets a fresh
      page pull a stale script that expects markup this page no longer has —
      which freezes the gate. Bump on any change to the #tb-auth contract. -->
-<script src="auth.js?v=2"></script>
-
-<script>
-(function () {
-  const loader  = document.getElementById('tb-loader');
-  const bar     = document.getElementById('tb-loader-bar');
-  const status  = document.getElementById('tb-loader-status');
-
-  /* Animate the progress bar through staged messages */
-  const stages = [
-    { pct: 18,  msg: 'Loading components\u2026' },
-    { pct: 42,  msg: 'Building workspace\u2026' },
-    { pct: 67,  msg: 'Starting solver\u2026'    },
-    { pct: 85,  msg: 'Calibrating engine\u2026' },
-    { pct: 94,  msg: 'Almost ready\u2026'       },
-  ];
-  let s = 0;
-  const tick = setInterval(() => {
-    if (s < stages.length) {
-      bar.style.width    = stages[s].pct + '%';
-      status.textContent = stages[s].msg;
-      s++;
-    }
-  }, 420);
-
-  /* Dismiss once everything is loaded */
-  window.addEventListener('load', () => {
-    clearInterval(tick);
-    bar.style.width    = '100%';
-    status.textContent = 'Ready.';
-    setTimeout(() => { loader.classList.add('hidden'); }, 700);
-  });
-})();
-</script>
+<script src="auth.js?v=3"></script>
 
 <div id="badge-tooltip"></div>
 <script>

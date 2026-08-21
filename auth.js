@@ -83,7 +83,6 @@
   function appRegions() {
     return Array.prototype.filter.call(document.body.children, el =>
       el !== gate &&
-      el.id !== 'tb-loader' &&
       !/^(SCRIPT|STYLE|LINK|TEMPLATE)$/.test(el.tagName));
   }
 

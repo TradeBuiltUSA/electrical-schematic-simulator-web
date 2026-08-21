@@ -9,7 +9,7 @@ and troubleshooting electrical systems.
 
 Design, wire, energize, and troubleshoot circuits with real-time Ohm's Law
 calculations, electron flow animation, and IEEE/ANSI schematic symbols —
-entirely in your browser. Nothing to install, nothing uploaded.
+entirely in your browser. Nothing to install.
 
 > **Proprietary software — not open source.** This repository is public so the
 > app can be delivered to your browser, not so the code can be reused. See
@@ -61,10 +61,14 @@ the email address below instead.
 The simulator is intended to be used at its hosted address:
 <https://tradebuiltusa.github.io/electrical-schematic-simulator-web/>
 
-## Privacy
+## Accounts and privacy
 
-The simulator runs entirely client-side. No account, no telemetry, no data leaves
-your browser. Saved workspaces live in your browser's local storage.
+The simulator requires a TradeBuilt account to sign in. Saved projects are stored
+with that account so they are available on any device you sign in on, and only
+you can read them. No telemetry.
+
+The circuit you are working on also auto-saves in your own browser, on the device
+you are using, so a refresh does not lose it. That copy never leaves the device.
 
 ## Copyright and licensing
 

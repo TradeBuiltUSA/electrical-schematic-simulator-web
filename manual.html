@@ -411,22 +411,26 @@
   <ol>
     <li>Click <strong>Settings &gt; Save Project</strong> in the toolbar</li>
     <li>Enter a name for the project</li>
-    <li>Click Save — the project is stored in browser localStorage</li>
-    <li>Overwriting an existing save will prompt for confirmation</li>
+    <li>Click <strong>Save New</strong> &mdash; the project is saved to your TradeBuilt account</li>
+    <li>To replace an existing project instead, click <strong>Overwrite</strong> on its row and confirm</li>
   </ol>
+  <p>Two projects are allowed to have the same name. They stay separate projects, and the dialog tells you when a name is already in use so you can pick a clearer one.</p>
   <h3>Load</h3>
   <ol>
     <li>Click <strong>Settings &gt; Load Project</strong> in the toolbar</li>
-    <li>Browse saved projects showing thumbnail, component count, and save date</li>
+    <li>Browse your saved projects, newest first, showing component count, wire count, and when each was last saved</li>
     <li>Click a project to load it</li>
-    <li>Click the &times; button to delete a saved project</li>
+    <li>Click <strong>Rename</strong> to change a project's name, or the &times; button to delete it</li>
   </ol>
   <h3>Auto-Save</h3>
-  <p>The current project auto-saves on every change and restores automatically when the page is refreshed. If the circuit was energized when you closed the browser, it will restore in the energized state.</p>
+  <p>The circuit you are working on auto-saves on every change and restores automatically when the page is refreshed. If the circuit was energized when you closed the browser, it will restore in the energized state. This is separate from your saved projects &mdash; it is a safety net for the work in progress, kept on the device you are using.</p>
 
   <h3>Where saved projects live</h3>
-  <p>Saved projects and the auto-save are stored by your web browser, on the device you are using. They are not uploaded anywhere and no one else can see them &mdash; a project saved on one device does not appear on another, and each person using the simulator has their own separate saves.</p>
-  <p><strong>This storage is not permanent.</strong> Clearing your browser's cookies and site data deletes saved projects, and on iPad and Mac, Safari's &ldquo;Clear History and Website Data&rdquo; does the same. Safari can also discard the storage on its own if you do not visit the simulator for about a week. Export anything you want to keep.</p>
+  <p>Saved projects are stored with your TradeBuilt account, not on one particular device. Sign in on another computer or iPad and your projects are there. Renaming or deleting a project changes it everywhere you are signed in.</p>
+  <p>You only ever see your own projects. Signing out clears them from the screen, so a second person signing in on the same device sees their own projects and none of yours.</p>
+  <p>The auto-save is the exception: it stays in the browser on the device you are using, and it is <strong>not</strong> permanent. Clearing your browser's cookies and site data deletes it, and on iPad and Mac, Safari's &ldquo;Clear History and Website Data&rdquo; does the same. Safari can also discard it on its own if you do not visit the simulator for about a week. Save your work as a project so it is kept with your account rather than relying on the auto-save.</p>
+  <p>If your connection drops, you can keep working. Saves made while offline are held and sent as soon as you are back online.</p>
+  <p>Export is still the way to hand a circuit to somebody else, or to keep a copy that does not depend on an account &mdash; see below.</p>
 
   <h3>Export Schematic to File</h3>
   <p>Exporting writes a project to a <code>.tbss.json</code> file you keep &mdash; a backup that survives clearing your browser, and the way to move a circuit to another device or hand it to someone else.</p>

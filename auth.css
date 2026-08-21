@@ -5,18 +5,27 @@
    non-scrolling body that would break the manual).
 
    #tb-auth sits at z 99998, just under index.html's splash loader, so a
-   signed-out visitor never sees an uncovered frame between the two. States are
-   driven by the data-state attribute that auth.js sets. */
+   signed-out visitor never sees an uncovered frame between the two. It borrows
+   the loader's palette: near-black ground, amber accent.
 
-/* The gate is dropped into two pages with unrelated stylesheets — the manual
-   gives every h2 a blue rule and its own paragraph spacing. Neutralise that
-   here so both pages render the card identically. :where() keeps the reset at
-   zero specificity, so the per-element rules below still win — a plain
-   `#tb-auth h2` would outrank `#tb-auth-title` and undo it. */
-#tb-auth :where(h2, p) {
+   SPECIFICITY: every rule below is scoped under #tb-auth, deliberately. The
+   gate drops into two pages with unrelated stylesheets, so it needs a reset
+   strong enough to beat a host page's element selectors (manual.html puts a
+   blue rule under every h2). That reset therefore carries an id, and a bare
+   `.tb-btn-ghost` would lose to it and silently render borderless. Keep the
+   #tb-auth prefix when adding rules here. */
+
+#tb-auth :where(h2, p, label, input, button) {
   margin: 0;
   padding: 0;
   border: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: none;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 #tb-auth {
@@ -25,9 +34,14 @@
   z-index: 99998;
   background: #080b14;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 24px;
+  overflow-y: auto;              /* the sign-up form can outgrow a short window */
+  padding: 32px 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.62);
   transition: opacity 0.35s ease, visibility 0.35s ease;
 }
 #tb-auth.tb-auth-done {
@@ -35,94 +49,275 @@
   visibility: hidden;
   pointer-events: none;
 }
+
 #tb-auth-card {
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   gap: 14px;
-  max-width: 380px;
   width: 100%;
+  max-width: 380px;
+  margin: auto;                  /* centres when short, scrolls when tall */
 }
-#tb-auth-logo {
-  height: 72px;
+
+#tb-auth #tb-auth-logo {
+  height: 64px;
   border-radius: 14px;
   filter:
     drop-shadow(0 0 28px rgba(245, 158, 11, 0.55))
     drop-shadow(0 0 8px rgba(245, 158, 11, 0.35));
 }
-#tb-auth-title {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+#tb-auth #tb-auth-title {
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: rgba(245, 158, 11, 0.85);
 }
-#tb-auth-sub {
+#tb-auth #tb-auth-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+#tb-auth .tb-auth-sub {
   font-size: 14px;
   line-height: 1.55;
   color: rgba(255, 255, 255, 0.62);
-  max-width: 30ch;
 }
-#tb-auth-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-height: 46px;              /* comfortable touch target on iPad */
-  padding: 12px 22px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 10px;
-  background: #fff;
-  color: #1f1f1f;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease, transform 0.1s ease;
-}
-#tb-auth-btn:hover  { background: #f1f3f4; }
-#tb-auth-btn:active { transform: scale(0.98); }
-#tb-auth-btn:focus-visible {
-  outline: 2px solid #f59e0b;
-  outline-offset: 3px;
-}
-#tb-auth-checking,
-#tb-auth-working,
-#tb-auth-offline {
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.42);
-}
-#tb-auth-error {
+#tb-auth .tb-auth-note {
   font-size: 12.5px;
-  line-height: 1.5;
-  color: #fca5a5;
-  min-height: 1em;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.5);
 }
-#tb-auth-legal {
-  margin-top: 6px;
+#tb-auth #tb-auth-legal {
+  margin-top: 4px;
   font-size: 10.5px;
   letter-spacing: 0.04em;
   color: rgba(255, 255, 255, 0.22);
 }
 
-/* Only one status line and one action are ever live at a time. */
-#tb-auth[data-state="checking"] #tb-auth-btn,
-#tb-auth[data-state="checking"] #tb-auth-sub,
-#tb-auth[data-state="working"]  #tb-auth-checking,
-#tb-auth[data-state="working"]  #tb-auth-btn,
-#tb-auth[data-state="signin"]   #tb-auth-checking,
-#tb-auth[data-state="signin"]   #tb-auth-working,
-#tb-auth[data-state="offline"]  #tb-auth-checking,
-#tb-auth[data-state="offline"]  #tb-auth-btn,
-#tb-auth[data-state="offline"]  #tb-auth-sub,
-#tb-auth #tb-auth-working,
-#tb-auth #tb-auth-offline { display: none; }
+/* ── Buttons ── */
+#tb-auth .tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;              /* comfortable touch target on iPad */
+  padding: 12px 20px;
+  border: 1px solid transparent; /* keeps every variant the same size */
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+#tb-auth .tb-btn:active { transform: scale(0.99); }
+#tb-auth .tb-btn:disabled { opacity: 0.55; cursor: default; transform: none; }
 
-#tb-auth[data-state="working"] #tb-auth-working,
-#tb-auth[data-state="offline"] #tb-auth-offline { display: block; }
+#tb-auth .tb-btn-primary {
+  background: linear-gradient(180deg, #f59e0b, #d97706);
+  color: #1a1206;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 6px 18px rgba(245, 158, 11, 0.22);
+}
+#tb-auth .tb-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #fbbf24, #f59e0b);
+}
+
+#tb-auth .tb-btn-google {
+  background: #fff;
+  color: #1f1f1f;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+#tb-auth .tb-btn-google:hover:not(:disabled) { background: #f1f3f4; }
+
+#tb-auth .tb-btn-ghost {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+#tb-auth .tb-btn-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+#tb-auth .tb-btn-icon { display: inline-flex; }
+
+#tb-auth .tb-btn:focus-visible,
+#tb-auth .tb-link:focus-visible,
+#tb-auth .tb-eye:focus-visible,
+#tb-auth input:focus-visible {
+  outline: 2px solid #f59e0b;
+  outline-offset: 2px;
+}
+
+#tb-auth .tb-link {
+  color: rgba(245, 158, 11, 0.9);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#tb-auth .tb-link:hover:not(:disabled) { color: #fbbf24; text-decoration: underline; }
+#tb-auth .tb-link:disabled { opacity: 0.5; cursor: default; }
+
+/* ── "or" rule ── */
+#tb-auth .tb-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+#tb-auth .tb-or::before,
+#tb-auth .tb-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ── Form ── */
+#tb-auth .tb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+#tb-auth .tb-field { display: flex; flex-direction: column; gap: 5px; }
+#tb-auth .tb-field > label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+#tb-auth input[type="text"],
+#tb-auth input[type="email"],
+#tb-auth input[type="password"] {
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #f3f4f6;
+  font-size: 15px;               /* under 16px makes iPad Safari zoom on focus */
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+#tb-auth input::placeholder { color: rgba(255, 255, 255, 0.28); }
+#tb-auth input:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.26); }
+#tb-auth input:focus {
+  outline: none;
+  border-color: rgba(245, 158, 11, 0.75);
+  background: rgba(255, 255, 255, 0.07);
+}
+#tb-auth input[aria-invalid="true"] { border-color: #ef4444; }
+#tb-auth input:disabled { opacity: 0.6; }
+
+/* Chrome paints autofilled inputs near-white; this keeps them in the theme. */
+#tb-auth input:-webkit-autofill,
+#tb-auth input:-webkit-autofill:hover,
+#tb-auth input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #f3f4f6;
+  -webkit-box-shadow: 0 0 0 40px #131722 inset;
+  caret-color: #f3f4f6;
+}
+
+#tb-auth .tb-input-wrap { position: relative; display: flex; }
+#tb-auth .tb-input-wrap input { padding-right: 44px; }
+#tb-auth .tb-eye {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+}
+#tb-auth .tb-eye:hover:not(:disabled) { color: rgba(255, 255, 255, 0.85); }
+#tb-auth .tb-eye:disabled { opacity: 0.4; cursor: default; }
+#tb-auth .tb-eye-icon { display: inline-flex; }
+
+#tb-auth .tb-field-err {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #fca5a5;
+}
+#tb-auth .tb-field-err:empty { display: none; }
+
+#tb-auth .tb-hint {
+  margin-top: -6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.35);
+}
+#tb-auth .tb-caps {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+#tb-auth .tb-row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+#tb-auth .tb-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+}
+#tb-auth input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #f59e0b;
+  cursor: pointer;
+}
+
+/* ── Messages ── */
+#tb-auth .tb-msg {
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+}
+#tb-auth .tb-msg:empty { display: none; }
+#tb-auth .tb-msg-err {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+#tb-auth .tb-msg-ok {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+#tb-auth .tb-foot {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── Host page ── */
 
 /* Signed-in identity above Sign Out in the Settings menu. */
 #tb-account {
@@ -138,3 +333,7 @@
 /* The manual scrolls; the app does not. Either way nothing behind the gate
    should move while it is up. */
 html.tb-gated, html.tb-gated body { overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  #tb-auth, #tb-auth .tb-btn { transition: none; }
+}

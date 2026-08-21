@@ -82,11 +82,11 @@ function autoSave() {
     localStorage.setItem('ac-simulator-circuit', JSON.stringify({
       components, wires, nextId, camX, camY, camZoom, simRunning, commentBoxes,
       meterActive, meterLeft, meterTop, meterBottom,
-      meterProbe1, meterProbe2, meterMode,
+      meterProbe1, meterProbe2, meterMode, meterInrushMode,
       clipboardActive, clipboardLeft, clipboardTop, clipboardWidth, clipboardHeight,
       showData, showTitles, showInfo, showStatus, showComments, showElectrons, showEnergizedColors, showFaults,
       ncvtActive, ncvtLeft, ncvtTop, ncvtSnapped,
-      clampActive, clampLeft, clampTop, clampJawX, clampJawY
+      clampActive, clampLeft, clampTop, clampJawX, clampJawY, clampInrushMode
     }));
   } catch (e) {
     console.warn('autoSave: localStorage write failed', e);
@@ -317,6 +317,25 @@ function solveLinear(A, b, n) {
 
 let _solveDepth = 0;
 let _solveStateHistory = []; // Track contactor states to detect oscillations
+/**
+ * Solve the circuit currently on the canvas.
+ *
+ * Takes no arguments and returns nothing: it reads the shared state
+ * (`components`, `wires`, and each component's `props`) and writes its answers
+ * back into the shared result maps, which the renderer and the meters then read.
+ *
+ * Writes (all cleared on entry, so a component absent from `compResults` was
+ * simply never solved this pass — treat missing fields as absent, not zero):
+ *   - `compResults`    compId → { voltageDrop, current, watts, resistance, … }
+ *   - `nodeVoltages`   net key → volts
+ *   - `branchCurrents` branch key → amps
+ *
+ * Re-entrant by design: a coil that picks up or drops out changes the contact
+ * states mid-solve and the solver calls itself again to settle. `_solveDepth`
+ * caps that at 5 levels and `_solveStateHistory` detects a contact set that
+ * oscillates, so a chattering control circuit stops instead of hanging the tab.
+ * Blowing a fuse or tripping a breaker also mutates props and re-solves.
+ */
 function solveCircuit() {
   if (_solveDepth > 5) return; // prevent infinite recursion
   // The oscillation guard only means anything WITHIN one top-level solve.  Carrying

@@ -742,6 +742,53 @@ function updateMeterDisplay(v, u) {
 }
 function setMeterStatus(m) { /* status locked to "Drag probes to measure" */ }
 
+// ── Restoring persisted tool state ──────────────────────────────────────────
+// The startup autosave restore and a named project load both come through here,
+// so the two paths cannot drift apart again, and neither can a variable and the
+// control that is supposed to show it. Each applier is a no-op for a field the
+// save doesn't carry, which is what keeps older saves loading unchanged.
+
+// The dial has a fixed set of positions, and the markup is the authority on what
+// they are. A stored string outside that set is corrupt: keep the current mode
+// rather than putting the meter in a position that no button can represent.
+function isValidMeterMode(mode) {
+  if (typeof mode !== 'string') return false;
+  const btns = document.querySelectorAll('#meter-modes button');
+  for (const b of btns) if (b.dataset.mode === mode) return true;
+  return false;
+}
+
+function applyMeterMode(mode) {
+  if (!isValidMeterMode(mode)) return false;
+  meterMode = mode;
+  document.querySelectorAll('#meter-modes button').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  return true;
+}
+
+function applyMeterInrushMode(on) {
+  meterInrushMode = on === true;
+  meterInrushPeak = null;   // a peak captured on another circuit means nothing here
+  const btn = document.getElementById('meter-inrush-btn');
+  const label = document.getElementById('meter-inrush-label');
+  if (btn) btn.classList.toggle('active', meterInrushMode);
+  if (label) { label.textContent = 'Inrush'; label.classList.toggle('visible', meterInrushMode); }
+  return meterInrushMode;
+}
+
+// Restore the tool state a save carries. Missing fields keep the current state —
+// the same rule the view toggles already follow — so a save written before any of
+// these fields existed loads exactly as it did before.
+function applySavedToolState(src) {
+  if (!src || typeof src !== 'object') return;
+  if (src.meterMode !== undefined) applyMeterMode(src.meterMode);
+  if (src.meterInrushMode !== undefined) applyMeterInrushMode(_asSavedBool(src.meterInrushMode));
+  if (src.clampInrushMode !== undefined && window._applyClampInrush) {
+    window._applyClampInrush(_asSavedBool(src.clampInrushMode));
+  }
+}
+
 // ── Probe drag event listeners ──
 function initProbeListeners() {
   ['black','red'].forEach(color => {

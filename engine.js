@@ -320,7 +320,21 @@ function generateThumbnail() {
   } catch(e) { return null; }
 }
 
-// Build the save data object for the current circuit state
+/**
+ * Build a named-project save entry (the value stored under a name in
+ * `ac-sim-circuits`).
+ *
+ * Not a pure snapshot of the data model: alongside `components` / `wires` /
+ * camera / view toggles it reads live panel geometry straight off the DOM, pulls
+ * the clipboard pages out of `localStorage`, and rasterizes a thumbnail. It is
+ * therefore only meaningful to call while the app is mounted.
+ *
+ * `autoSave()` in solver.js writes a similar but not identical payload to a
+ * different key; see the Save data format section of README.md for the
+ * field-by-field differences before changing either one.
+ *
+ * @returns {Object} save entry — see README.md for the field contract.
+ */
 function buildSaveData() {
   const meterEl  = document.getElementById('multimeter');
   const cbEl     = document.getElementById('clipboard-panel');
@@ -334,7 +348,7 @@ function buildSaveData() {
     meterLeft:   meterEl ? meterEl.style.left   : null,
     meterTop:    meterEl ? meterEl.style.top     : null,
     meterBottom: meterEl ? meterEl.style.bottom  : null,
-    meterProbe1, meterProbe2, meterInrushMode,
+    meterProbe1, meterProbe2, meterMode, meterInrushMode,
     showData, showTitles, showInfo, showStatus, showComments, showElectrons, showEnergizedColors, showFaults,
     clipboardActive,
     clipboardLeft:   cbEl ? cbEl.style.left   : null,
@@ -620,6 +634,11 @@ function showLoadDialog() {
         if (c.showElectrons !== undefined)       { showElectrons       = c.showElectrons;       document.getElementById('chk-electrons').checked        = showElectrons; }
         if (c.showEnergizedColors !== undefined) { showEnergizedColors = c.showEnergizedColors; document.getElementById('chk-energized-colors').checked = showEnergizedColors; }
         if (c.showFaults !== undefined)          { showFaults          = c.showFaults;          document.getElementById('chk-faults').checked           = showFaults; }
+
+        // Tool state (meter dial, both inrush holds) — same appliers the startup
+        // restore uses. Applied before the meter block so the re-read below
+        // happens in the restored mode.
+        applySavedToolState(c);
 
         // Multimeter
         const meterEl = document.getElementById('multimeter');
@@ -997,8 +1016,7 @@ if (saved) {
     if (savedData.clipboardActive) clipboardActive = true;
     if (savedData.meterProbe1) meterProbe1 = savedData.meterProbe1;
     if (savedData.meterProbe2) meterProbe2 = savedData.meterProbe2;
-    if (savedData.meterMode)   meterMode   = savedData.meterMode;
-    if (savedData.meterInrushMode) { meterInrushMode = true; document.getElementById('meter-inrush-btn').classList.add('active'); document.getElementById('meter-inrush-label').textContent = 'Inrush'; document.getElementById('meter-inrush-label').classList.add('visible'); }
+    applySavedToolState(savedData);
     // Restore view toggles (only override if explicitly saved)
     if (savedData.showData !== undefined)           { showData           = savedData.showData;           document.getElementById('chk-data').checked            = showData; }
     if (savedData.showTitles !== undefined)         { showTitles         = savedData.showTitles;         document.getElementById('chk-titles').checked          = showTitles; }
@@ -1048,12 +1066,6 @@ if (meterActive) {
     meterEl.style.left   = savedData.meterLeft;
     meterEl.style.top    = savedData.meterTop;
     meterEl.style.bottom = savedData.meterBottom || 'auto';
-  }
-  // Sync mode buttons to the restored meterMode
-  if (savedData && savedData.meterMode) {
-    document.querySelectorAll('#meter-modes button').forEach(b => {
-      b.classList.toggle('active', b.dataset.mode === savedData.meterMode);
-    });
   }
   const pb = document.getElementById('probe-black');
   const pr = document.getElementById('probe-red');

@@ -1003,13 +1003,20 @@
     window._clampDetect = function() { if (clampActive) detectWire(); };
 
     // ── Inrush toggle for clamp meter ──
-    document.getElementById('clamp-inrush-btn').addEventListener('click', () => {
-      clampInrushMode = !clampInrushMode;
+    // Set the flag and the control it drives together. Restores go through the
+    // same function, so a restored clamp can't show one thing and hold another.
+    window._applyClampInrush = function(on) {
+      clampInrushMode = on === true;
       clampInrushPeak = null;
       window._clampInrushWireKey = null;
-      document.getElementById('clamp-inrush-btn').classList.toggle('active', clampInrushMode);
-      document.getElementById('clamp-inrush-label').textContent = 'Inrush';
-      document.getElementById('clamp-inrush-label').classList.toggle('visible', clampInrushMode);
+      const btn = document.getElementById('clamp-inrush-btn');
+      const label = document.getElementById('clamp-inrush-label');
+      if (btn) btn.classList.toggle('active', clampInrushMode);
+      if (label) { label.textContent = 'Inrush'; label.classList.toggle('visible', clampInrushMode); }
+      return clampInrushMode;
+    };
+    document.getElementById('clamp-inrush-btn').addEventListener('click', () => {
+      window._applyClampInrush(!clampInrushMode);
       if (clampSnappedWire) detectWire();
     });
 
@@ -1051,11 +1058,8 @@
       clampRestoring = true;
       clampEl.classList.add('visible');
       document.getElementById('btn-clamp').classList.add('active');
-      if (savedData.clampInrushMode) {
-        clampInrushMode = true;
-        document.getElementById('clamp-inrush-btn').classList.add('active');
-        document.getElementById('clamp-inrush-label').textContent = 'Inrush';
-        document.getElementById('clamp-inrush-label').classList.add('visible');
+      if (savedData.clampInrushMode !== undefined) {
+        window._applyClampInrush(_asSavedBool(savedData.clampInrushMode));
       }
       // Don't show jaw yet — wait until position is ready
       setTimeout(() => {

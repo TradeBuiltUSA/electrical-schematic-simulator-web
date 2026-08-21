@@ -86,6 +86,12 @@ function resetRuntimeState() {
 
 const _isFiniteNum = v => typeof v === 'number' && isFinite(v);
 
+// Persisted booleans. Every writer stores a real boolean, so anything else in
+// storage is corrupt input rather than an older shape worth honouring — and `!!`
+// would turn the string "false" into true. Absent fields are handled by the
+// callers, which leave the current state alone.
+const _asSavedBool = v => v === true;
+
 // Scrub a component list coming out of storage. Anything that reaches the renderer
 // is assumed to be well-formed, so this is the gate that keeps it that way:
 //

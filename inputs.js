@@ -952,30 +952,26 @@ function onMouseUp(e) {
 
 function onWheel(e) {
   e.preventDefault();
-  // Trackpad pinch-to-zoom fires with ctrlKey
-  if (e.ctrlKey || e.metaKey) {
-    const { sx, sy } = canvasMousePos(e);
-    const worldBefore = screenToWorld(sx, sy);
-    const zoomFactor = 1 - e.deltaY * 0.005;
-    camZoom = Math.max(0.1, Math.min(5, camZoom * zoomFactor));
-    const worldAfter = screenToWorld(sx, sy);
-    camX += (worldAfter.x - worldBefore.x) * camZoom;
-    camY += (worldAfter.y - worldBefore.y) * camZoom;
-  } else if (e.deltaX !== 0 || !Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 15) {
-    // Trackpad two-finger swipe: carries deltaX, or emits small/fractional deltaY.
-    // The old `< 50` threshold caught real wheel notches too (many mice report ~40),
-    // so a plain scroll panned instead of zooming.
-    camX -= e.deltaX;
-    camY -= e.deltaY;
-  } else {
-    // Mouse scroll wheel: whole-number deltaY jumps, no deltaX
-    const { sx, sy } = canvasMousePos(e);
-    const worldBefore = screenToWorld(sx, sy);
-    camZoom = Math.max(0.1, Math.min(5, camZoom * (e.deltaY < 0 ? 1.1 : 0.9)));
-    const worldAfter = screenToWorld(sx, sy);
-    camX += (worldAfter.x - worldBefore.x) * camZoom;
-    camY += (worldAfter.y - worldBefore.y) * camZoom;
-  }
+  const { sx, sy } = canvasMousePos(e);
+  const worldBefore = screenToWorld(sx, sy);
+  // Every wheel gesture zooms about the pointer — a mouse notch, a trackpad
+  // pinch (which arrives as ctrlKey+wheel), and a trackpad two-finger scroll
+  // alike. Panning stays on right-click/middle/Alt drag, and on two-finger
+  // drag on touch.
+  //
+  // Trackpad gestures report small or fractional deltas (and often a deltaX),
+  // so they get a continuous factor that tracks the finger; a real wheel notch
+  // is a whole-number jump (many mice report ~40, some 120) and gets a fixed
+  // step. The factor is clamped so one violent flick can't invert the zoom.
+  const fineGrained = e.ctrlKey || e.metaKey || e.deltaX !== 0 ||
+    !Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 15;
+  const zoomFactor = fineGrained
+    ? Math.max(0.5, Math.min(2, 1 - e.deltaY * 0.005))
+    : (e.deltaY < 0 ? 1.1 : 0.9);
+  camZoom = Math.max(0.1, Math.min(5, camZoom * zoomFactor));
+  const worldAfter = screenToWorld(sx, sy);
+  camX += (worldAfter.x - worldBefore.x) * camZoom;
+  camY += (worldAfter.y - worldBefore.y) * camZoom;
   autoSave();
   render();
 }

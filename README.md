@@ -2,10 +2,14 @@
 
 ### ▶︎ [Launch the simulator](https://tradebuiltusa.github.io/electrical-schematic-simulator-web/)
 
-An interactive AC circuit schematic simulator built for HVAC trade education.
-Design, wire, and energize circuits with real-time Ohm's Law calculations,
-electron flow animation, and IEEE/ANSI schematic symbols — entirely in your
-browser. Nothing to install, nothing uploaded.
+An interactive electrical training tool that helps students, apprentices,
+instructors, and skilled trades professionals build practical skills in reading
+schematics, understanding AC and DC circuits, using electrical test instruments,
+and troubleshooting electrical systems.
+
+Design, wire, energize, and troubleshoot circuits with real-time Ohm's Law
+calculations, electron flow animation, and IEEE/ANSI schematic symbols —
+entirely in your browser. Nothing to install, nothing uploaded.
 
 > **Proprietary software — not open source.** This repository is public so the
 > app can be delivered to your browser, not so the code can be reused. See
@@ -19,15 +23,32 @@ browser. Nothing to install, nothing uploaded.
 - **Draw and wire schematics** — place components on the canvas and connect them
 - **Energize and observe** — live solve with real-time Ohm's Law values
 - **Electron flow animation** — see current direction and magnitude as it moves
-- **Power sources** — 120V, 240V, 480V delta and wye, transformers, DC battery
-- **Technician's tool bag** — multimeter and field instruments for probing nodes
-- **Fault simulation** — introduce faults and troubleshoot the result
+- **AC power** — 120V and 240V single-phase, 480V delta and 480Y/277V wye
+  three-phase, and step-down transformers
+- **DC power** — battery source with polarity, and a solver that knows the
+  difference: capacitors block DC, transformers do not induce on it
+- **Technician's tool bag** — multimeter (AC/DC voltage, current, resistance,
+  capacitance), non-contact voltage tester, and amp clamp with inrush hold
+- **Fault simulation** — introduce open and short faults and troubleshoot the
+  result
 - **Data boxes and properties panel** — inspect and tune any component
 - **Save and load** workspaces locally
 - **Touch and mobile support**, plus keyboard shortcuts
 
 See the [user manual](https://tradebuiltusa.github.io/electrical-schematic-simulator-web/manual.html)
 for the full walkthrough.
+
+## Scope
+
+The simulator covers schematic reading, circuit building, electrical
+measurement, and troubleshooting across both AC and DC — the electrical
+concepts the skilled trades work with day to day.
+
+Some components — the CSR compressor, contactors, the low-voltage control
+transformer — come from HVAC/R practice because they are familiar, useful
+examples within the skilled trades. They are application examples, not the
+boundary of the product: this is not an HVAC simulator, and not an AC-only
+simulator.
 
 ## About this repository
 

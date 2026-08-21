@@ -61,19 +61,19 @@
   margin: auto;                  /* centres when short, scrolls when tall */
 }
 
-/* Same mark as the simulator's top-left logo (Assets/topbar-logo-on-light.png).
-   That artwork is drawn for the white topbar: TRADE is white letters inside a
-   black outline, on a transparent ground. On the gate's near-black cover the
-   outline swallows the letters and TRADE vanishes, so the img keeps a white
-   background. No padding — the wordmark fills its own frame, so the white
-   stops at the artwork and reads as the logo rather than a plate behind it. */
+/* The simulator's top-left mark, redrawn for a dark ground
+   (Assets/topbar-logo-on-dark.png). The topbar artwork leaves TRADE's letter
+   interiors transparent — they only read white because the white bar shows
+   through — so on this near-black cover the black outline swallowed the
+   letters. The dark variant bakes that white in behind the artwork and nowhere
+   else, so TRADE stays white with no plate, box, or padding around the mark.
+   Regenerate it from the on-light PNG by filling the transparent regions that
+   the outline encloses; never by compositing the whole frame over white. */
 #tb-auth #tb-auth-logo {
   height: 58px;
-  background: #fff;
-  border-radius: 4px;
-  box-shadow:
-    0 0 28px rgba(245, 158, 11, 0.5),
-    0 0 8px rgba(245, 158, 11, 0.3);
+  filter:
+    drop-shadow(0 0 14px rgba(245, 158, 11, 0.45))
+    drop-shadow(0 0 5px rgba(245, 158, 11, 0.3));
 }
 #tb-auth #tb-auth-title {
   font-size: 13px;

@@ -1,7 +1,44 @@
 
 // ── Ghost preview when placing a component ──
+const GHOST_BASE_ALPHA = 0.4;
+const GHOST_FADE_SECONDS = 0.18;   // full fade-out / fade-in time
+
+// render() only runs on demand, so the fade drives its own rAF loop and stops
+// as soon as ghostFade reaches its target.
+let _ghostFadeRaf = null;
+let _ghostFadeLast = 0;
+function setGhostFadeTarget(visible) {
+  const target = visible ? 1 : 0;
+  if (ghostFadeTarget === target) return;
+  ghostFadeTarget = target;
+  if (_ghostFadeRaf !== null) return;   // loop already running — it reads the new target
+  _ghostFadeLast = performance.now();
+  const stepFade = (ts) => {
+    const dt = Math.min((ts - _ghostFadeLast) / 1000, 0.1);  // cap after a backgrounded tab
+    _ghostFadeLast = ts;
+    const stepAmt = dt / GHOST_FADE_SECONDS;
+    ghostFade = ghostFade < ghostFadeTarget
+      ? Math.min(ghostFadeTarget, ghostFade + stepAmt)
+      : Math.max(ghostFadeTarget, ghostFade - stepAmt);
+    if (Math.abs(ghostFade - ghostFadeTarget) < 0.005) {
+      ghostFade = ghostFadeTarget;
+      _ghostFadeRaf = null;
+      render();
+      return;
+    }
+    render();
+    _ghostFadeRaf = requestAnimationFrame(stepFade);
+  };
+  _ghostFadeRaf = requestAnimationFrame(stepFade);
+}
+
 function drawGhostComponent() {
   if (!isComponentTool(currentTool) || !hoveredNode) return;
+
+  // Ghosts draw at 0.4 alpha, scaled by the sidebar-hover fade. Bail once it is
+  // effectively invisible so a faded-out preview costs nothing per frame.
+  const gAlpha = GHOST_BASE_ALPHA * ghostFade;
+  if (gAlpha < 0.005) return;
 
   const size = COMP_SIZE[currentTool] || 2;
   const half = Math.floor(size / 2);
@@ -12,7 +49,7 @@ function drawGhostComponent() {
   if (currentTool === 'earth_ground') {
     const busGx = GROUND_BUS.earth.gx;
     drawOneComponent({ id: -1, type: currentTool, gx1: hx, gy1: hy, gx2: busGx, gy2: 0,
-      props: JSON.parse(JSON.stringify(ComponentDefaults[currentTool])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults[currentTool])) }, gAlpha);
     return;
   }
 
@@ -21,13 +58,13 @@ function drawGhostComponent() {
     const coilSize = COMP_SIZE['contactor_coil'];
     const cc = compCoords(hx, hy, coilSize, placeRotation);
     drawOneComponent({ id: -1, type: 'contactor_coil', gx1: cc.gx1, gy1: cc.gy1, gx2: cc.gx2, gy2: cc.gy2,
-      props: JSON.parse(JSON.stringify(ComponentDefaults['contactor_coil'])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults['contactor_coil'])) }, gAlpha);
     const contSize = COMP_SIZE['contactor_contact'];
     const isH = placeRotation % 2 === 0;
     const offset = 3;
     const tc = compCoords(isH ? hx : hx + offset, isH ? hy + offset : hy, contSize, placeRotation);
     drawOneComponent({ id: -2, type: 'contactor_contact', gx1: tc.gx1, gy1: tc.gy1, gx2: tc.gx2, gy2: tc.gy2,
-      props: JSON.parse(JSON.stringify(ComponentDefaults['contactor_contact'])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults['contactor_contact'])) }, gAlpha);
     return;
   }
 
@@ -36,19 +73,19 @@ function drawGhostComponent() {
     const swSize = COMP_SIZE['switch'];
     const sw1 = compCoords(hx, hy, swSize, placeRotation);
     drawOneComponent({ id: -1, type: 'switch', gx1: sw1.gx1, gy1: sw1.gy1, gx2: sw1.gx2, gy2: sw1.gy2,
-      props: JSON.parse(JSON.stringify(ComponentDefaults['switch'])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults['switch'])) }, gAlpha);
     const isH = placeRotation % 2 === 0;
     const offset = 1.5;
     const sw2 = compCoords(isH ? hx : hx + offset, isH ? hy + offset : hy, swSize, placeRotation);
     drawOneComponent({ id: -2, type: 'switch', gx1: sw2.gx1, gy1: sw2.gy1, gx2: sw2.gx2, gy2: sw2.gy2,
-      props: JSON.parse(JSON.stringify(ComponentDefaults['switch'])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults['switch'])) }, gAlpha);
     // Dashed link line between switches showing mechanical coupling
     const midX1 = ((sw1.gx1 + sw1.gx2) / 2) * GRID;
     const midY1 = ((sw1.gy1 + sw1.gy2) / 2) * GRID;
     const midX2 = ((sw2.gx1 + sw2.gx2) / 2) * GRID;
     const midY2 = ((sw2.gy1 + sw2.gy2) / 2) * GRID;
     ctx.save();
-    ctx.globalAlpha = 0.4;
+    ctx.globalAlpha = gAlpha;
     ctx.strokeStyle = '#666';
     ctx.lineWidth = 1.5 / camZoom;
     ctx.setLineDash([4 / camZoom, 3 / camZoom]);
@@ -63,13 +100,13 @@ function drawGhostComponent() {
     const coilSize = COMP_SIZE['relay_coil'];
     const cc = compCoords(hx, hy, coilSize, placeRotation);
     drawOneComponent({ id: -1, type: 'relay_coil', gx1: cc.gx1, gy1: cc.gy1, gx2: cc.gx2, gy2: cc.gy2,
-      props: JSON.parse(JSON.stringify(ComponentDefaults['relay_coil'])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults['relay_coil'])) }, gAlpha);
     const contSize = COMP_SIZE['relay_contact'];
     const isH = placeRotation % 2 === 0;
     const offset = 3;
     const tc = compCoords(isH ? hx : hx + offset, isH ? hy + offset : hy, contSize, placeRotation);
     drawOneComponent({ id: -2, type: 'relay_contact', gx1: tc.gx1, gy1: tc.gy1, gx2: tc.gx2, gy2: tc.gy2,
-      props: JSON.parse(JSON.stringify(ComponentDefaults['relay_contact'])) }, 0.4);
+      props: JSON.parse(JSON.stringify(ComponentDefaults['relay_contact'])) }, gAlpha);
     return;
   }
 
@@ -142,7 +179,7 @@ function drawGhostComponent() {
     }
   }
 
-  drawOneComponent(ghost, 0.4);
+  drawOneComponent(ghost, gAlpha);
 }
 
 // ── Wire preview ──
@@ -163,11 +200,17 @@ function drawHoveredNode() {
   if (!hoveredNode) return;
   if (meterActive) return;
   if (currentTool === 'select') return;
+  // Rides the same sidebar fade as the ghost — otherwise fading the preview out
+  // leaves this ring behind as a stray dot on an empty board.
+  if (ghostFade < 0.005) return;
+  ctx.save();
+  ctx.globalAlpha = ghostFade;
   ctx.strokeStyle = '#cc8800';
   ctx.lineWidth = 1.5 / camZoom;
   ctx.beginPath();
   ctx.arc(hoveredNode.gx * GRID, hoveredNode.gy * GRID, 5 / camZoom, 0, Math.PI * 2);
   ctx.stroke();
+  ctx.restore();
 }
 
 function drawBoxSelect() {
@@ -283,6 +326,17 @@ document.addEventListener('wheel', e => {
   if (e.ctrlKey || e.metaKey) e.preventDefault();
 }, { passive: false });
 canvas.addEventListener('contextmenu', onContextMenu);
+
+// Fade the placement ghost out while the pointer is over the left component
+// menu. hoveredNode keeps its last canvas value there (it has to — the ghost
+// must reappear where it was when the pointer comes back), so without this the
+// preview just sits on the board while the user reads the menu.
+// mouseenter/mouseleave only, so an iPad touch never leaves the ghost hidden.
+const _sidebarEl = document.getElementById('sidebar');
+if (_sidebarEl) {
+  _sidebarEl.addEventListener('mouseenter', () => setGhostFadeTarget(false));
+  _sidebarEl.addEventListener('mouseleave', () => setGhostFadeTarget(true));
+}
 canvas.addEventListener('dblclick', (e) => {
   if (currentTool !== 'select') return;
   const { sx, sy } = canvasMousePos(e);
@@ -303,6 +357,9 @@ document.addEventListener('click', () => hideContextMenu());
 
 function onMouseDown(e) {
   hideContextMenu();
+  // Touch has no mousemove before the tap, so restore the preview here too —
+  // otherwise a sidebar tap on iPad could leave the ghost faded out.
+  setGhostFadeTarget(true);
   const { sx, sy } = canvasMousePos(e);
   const { x, y } = screenToWorld(sx, sy);
   const g = snapToGrid(x, y);
@@ -576,6 +633,7 @@ function onMouseMove(e) {
   }
   const { x, y } = screenToWorld(sx, sy);
   hoveredNode = snapToGrid(x, y);
+  setGhostFadeTarget(true);   // no-op unless the sidebar faded it out
 
   // Resize comment box
   if (resizingComment) {

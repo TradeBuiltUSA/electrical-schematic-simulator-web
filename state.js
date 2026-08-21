@@ -210,6 +210,12 @@ let wireStart = null;
 
 let selectedItem = null;
 let hoveredNode = null;
+// Placement-preview ("ghost") opacity. The preview follows the last hovered
+// grid node, so moving the pointer off the canvas and onto the sidebar used to
+// leave it stranded mid-board. ghostFade eases toward ghostFadeTarget (1 on the
+// canvas, 0 over the sidebar) so it dissolves instead of hanging or popping.
+let ghostFade = 1;
+let ghostFadeTarget = 1;
 let showData = true;
 let showTitles = true;
 let showInfo = true;

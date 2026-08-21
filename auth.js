@@ -12,10 +12,18 @@
      covers two pages (the app and the standalone manual). Duplicated markup
      across both is how they would quietly fall out of step.
 
-   This is a product gate, not a security boundary. The app is static files on
-   GitHub Pages and every circuit lives in the visitor's own localStorage, so
-   nothing behind the gate is unreachable from view-source. Sign-up is open:
-   the gate records who is using the simulator, it does not restrict access.
+   This overlay is a product gate, not a security boundary. The app is static
+   files on GitHub Pages, so nothing behind the overlay is unreachable from
+   view-source. Sign-up is open: the gate records who is using the simulator,
+   it does not restrict access.
+
+   What *is* a security boundary is the Firebase account this gate establishes.
+   Saved projects live in Firestore under users/{uid}/projects and are fenced
+   off by security rules keyed on request.auth.uid (see firestore.rules). Those
+   rules — not this overlay — are what keeps one account's projects away from
+   another's. Weakening sign-in therefore has consequences beyond the overlay
+   now: publishAuthUser() below is what the simulator trusts to decide whose
+   projects to load.
    ──────────────────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
@@ -1070,6 +1078,31 @@
 
   /* ── Admission ── */
 
+  /* ── The one bridge out of this gate ────────────────────────────────────
+     The simulator needs to know who is signed in so named projects can live
+     under that account. This is the only thing this script publishes, and it
+     is deliberately a snapshot of two fields rather than the Firebase user
+     object: handing out the live object would let any later script call
+     delete()/updatePassword() on it and route around the flows above.
+
+     Load order is not guaranteed to favour either side — this script runs last,
+     but a subscriber may have been parsed long before. So state is published to
+     a variable AND announced by event: a late subscriber reads TBAuthUser, an
+     early one waits for tb-auth-change. Both see the same thing.
+
+     Signing out publishes null, which is the signal consumers use to drop the
+     previous account's data from memory. */
+  function publishAuthUser(user) {
+    window.TBAuthUser = user
+      ? { uid: user.uid, email: user.email || null }
+      : null;
+    try {
+      document.dispatchEvent(new CustomEvent('tb-auth-change'));
+    } catch (e) {
+      console.warn('[auth] auth-change listener threw', e);
+    }
+  }
+
   function admit(user) {
     clearTimers();
     gate.classList.add('tb-auth-done');
@@ -1083,6 +1116,12 @@
       accountEl.hidden = false;
     }
     if (signOutBtn) signOutBtn.hidden = false;
+
+    /* Published only from here. A user parked on the verify screen or the
+       forced-password-change screen is signed in as far as Firebase is
+       concerned, but has not been admitted to the app, and must not have their
+       projects loaded behind the gate. */
+    publishAuthUser(user);
   }
 
   function hasPassword(user) {
@@ -1119,9 +1158,15 @@
       mustUpdatePassword = false;
       if (accountEl) accountEl.hidden = true;
       if (signOutBtn) signOutBtn.hidden = true;
+      publishAuthUser(null);
       show(signInView, {});
       return;
     }
+    /* Not admitted yet — proceed() decides. Anyone who was admitted under a
+       different account is dropped here rather than at admit(), so a switch
+       between accounts cannot leave the old uid published while the new one
+       sits on the verify screen. */
+    if (window.TBAuthUser && window.TBAuthUser.uid !== user.uid) publishAuthUser(null);
     proceed(user);
   }
 

@@ -238,22 +238,25 @@ function pasteSelection() {
   setStatus('Pasted ' + newSelections.length + ' item' + (newSelections.length > 1 ? 's' : ''));
 }
 
-// ── Named Circuit Save/Load System ──
+/* ── The pre-cloud project library ────────────────────────────────────────
+   `ac-sim-circuits` held named projects keyed by name, before they moved to
+   Firestore. It is now **read-only**: the one reader is
+   migrateLocalProjectsToCloud(), which lifts these entries into the user's
+   account once and leaves them where they are.
+
+   The matching writer was deliberately deleted rather than left in place. A
+   live second writer for named projects is how a single source of truth
+   quietly becomes two — a project saved to one store and looked for in the
+   other. If something ever genuinely needs to write here again, that is a
+   decision worth making explicitly, not one worth inheriting from a helper
+   that happened to still exist. */
 function getSavedCircuits() {
   try {
     const v = JSON.parse(localStorage.getItem('ac-sim-circuits') || '{}');
-    // A stored scalar or array would make Object.keys() enumerate indices and fill
-    // the dialog with junk rows — only a plain object is a usable index.
+    // A stored scalar or array would make Object.keys() enumerate indices and
+    // hand the migration junk rows — only a plain object is a usable index.
     return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
   } catch(e) { return {}; }
-}
-function saveSavedCircuits(circuits) {
-  try {
-    localStorage.setItem('ac-sim-circuits', JSON.stringify(circuits));
-  } catch (e) {
-    console.warn('saveSavedCircuits: localStorage write failed', e);
-    alert('Could not save circuit: storage is full. Try deleting some saved projects first.');
-  }
 }
 
 // Generate a thumbnail of the full workspace (canvas + sidebar + tools)
@@ -339,6 +342,36 @@ const SAVE_FORMAT_VERSION = 1;
 // reads it back, and it is deliberately not persisted: after a reload the
 // circuit is the autosave, which has no project name to claim.
 let currentProjectName = null;
+
+/* The open project's Firestore document id, and the `updatedAt` this session
+   last saw for it. The id is what identity actually hangs off now: names
+   collide and names change, so a rename must not look like a different project
+   and two projects called "Panel" must stay two projects. `updatedAt` is the
+   conflict basis — Save-over compares it against the stored copy so a save made
+   on another device in the meantime is reported rather than discarded.
+
+   Both are in-memory only, and both are cleared on sign-out: they name a
+   document under the previous account's uid, which the next account must never
+   be able to write through. */
+let currentProjectId = null;
+let currentProjectSeenAt = null;
+
+function setCurrentProject(id, name, updatedAt) {
+  currentProjectId = id || null;
+  currentProjectName = name || null;
+  currentProjectSeenAt = (typeof updatedAt === 'number' && isFinite(updatedAt)) ? updatedAt : null;
+}
+
+/* Signing out must leave nothing of the previous account behind in memory. The
+   canvas itself is deliberately left alone — the working circuit belongs to
+   whoever is at the keyboard and is already in localStorage — but the project
+   identity points into another user's collection, and any open dialog is
+   showing another user's project names. */
+function clearUserProjectState() {
+  setCurrentProject(null, null, null);
+  closeProjectDialogs();
+}
+
 const SAVE_FILE_APP = 'tradebuilt-electrical-schematic-simulator';
 
 /**
@@ -490,30 +523,95 @@ function exportCurrentProject() {
 }
 
 /**
- * Import flow: pick a file, then store it in the saved-projects library under a
- * free name. Deliberately does not touch the open canvas — a user importing a
- * file has not asked to lose the circuit in front of them, and the project is
- * one click away in the Load list afterwards.
+ * Import flow: pick a file, then store it as a new cloud project. Deliberately
+ * does not touch the open canvas — a user importing a file has not asked to
+ * lose the circuit in front of them, and the project is one click away in the
+ * Load list afterwards.
+ *
+ * The old "already exists, save as a copy?" prompt is gone with name-as-key.
+ * An import is always a new document: the name it carries is a label, and two
+ * projects are allowed to share one.
  */
 function importProjectFile(onDone) {
   pickProjectFile((name, circuit) => {
-    const circuits = getSavedCircuits();
-    let finalName = name;
-    if (circuits[finalName]) {
-      const overwrite = confirm(
-        `A project named "${finalName}" already exists.\n\n` +
-        'OK to overwrite it, or Cancel to import as a copy.'
-      );
-      if (!overwrite) {
-        let i = 2;
-        while (circuits[`${name} (${i})`]) i++;
-        finalName = `${name} (${i})`;
-      }
+    if (!window.TBCloud || TBCloud.status() !== 'ready') {
+      alert('Importing needs your account. ' +
+            (TBCloud && TBCloud.status() === 'connecting'
+              ? 'Still connecting — try again in a moment.'
+              : 'Sign in and try again.'));
+      return;
     }
-    circuits[finalName] = circuit;
-    saveSavedCircuits(circuits);
-    setStatus(`Imported "${finalName}"`);
-    if (typeof onDone === 'function') onDone(finalName);
+    /* The file was written by an export, so it still carries a thumbnail. The
+       cloud store strips it; nothing here needs to. */
+    TBCloud.create(name, circuit).then(res => {
+      setStatus(res.queued ? `Imported "${name}" — will sync when back online`
+                           : `Imported "${name}"`);
+      if (typeof onDone === 'function') onDone(res.id);
+    }).catch(err => {
+      console.warn('[projects] import failed', err);
+      alert('Could not import this project.\n\n' + (err && err.message ? err.message : err));
+    });
+  });
+}
+
+/* ── One-time lift of the pre-cloud library ──────────────────────────────
+   Projects saved before this build live in `ac-sim-circuits`, keyed by name and
+   carrying thumbnails. On the first successful connection for an account they
+   are copied up as ordinary cloud projects.
+
+   Deliberately additive: the localStorage entries are left exactly where they
+   are. A migration that deletes its source has one chance to be correct, and
+   this one runs against a network. If it half-fails the user has lost nothing
+   and the next sign-in retries whatever did not land.
+
+   The flag is per-uid, because two people sharing a browser each need their own
+   copy of that browser's legacy library — it predates accounts and belongs to
+   whoever is signed in when it is found. */
+function legacyMigrationKey(uid) { return 'tb-cloud-migrated-' + uid; }
+
+function migrateLocalProjectsToCloud(uid) {
+  let done;
+  try { done = localStorage.getItem(legacyMigrationKey(uid)); } catch (e) { return; }
+  if (done) return;
+
+  const circuits = getSavedCircuits();
+  const names = Object.keys(circuits);
+  if (!names.length) {
+    try { localStorage.setItem(legacyMigrationKey(uid), 'empty'); } catch (e) {}
+    return;
+  }
+
+  /* Serial, not parallel: a legacy library can hold dozens of projects, and
+     firing them all at once is how a cold connection turns into a burst of
+     failed writes. */
+  let uploaded = 0, failed = 0;
+  const step = (i) => {
+    if (i >= names.length) {
+      if (!failed) {
+        try { localStorage.setItem(legacyMigrationKey(uid), String(Date.now())); } catch (e) {}
+      }
+      if (uploaded) {
+        setStatus(`Synced ${uploaded} saved project${uploaded === 1 ? '' : 's'} to your account`);
+      }
+      if (failed) console.warn('[projects] ' + failed + ' project(s) did not migrate; will retry next sign-in');
+      return;
+    }
+    const name = names[i];
+    TBCloud.create(name, circuits[name])
+      .then(() => { uploaded++; })
+      .catch(err => { failed++; console.warn('[projects] migration failed for', name, err); })
+      .then(() => step(i + 1));
+  };
+  step(0);
+}
+
+/* Cloud status drives two things in the app: lifting the legacy library once an
+   account is available, and dropping the previous account's project identity
+   the moment it is not. */
+if (window.TBCloud) {
+  TBCloud.onChange((status, uid) => {
+    if (status === 'ready' && uid) migrateLocalProjectsToCloud(uid);
+    else if (status === 'signed-out') clearUserProjectState();
   });
 }
 
@@ -530,9 +628,20 @@ function importProjectFile(onDone) {
  * different key; see the Save data format section of README.md for the
  * field-by-field differences before changing either one.
  *
+ * The thumbnail is optional because the cloud store does not want it: it is a
+ * base64 JPEG that outweighs the entire schematic it previews, and it is
+ * regenerable from the circuit. It stays on by default so the localStorage
+ * library and exported files keep their previews. Resist the urge to fork this
+ * into a second builder for the cloud — a field written by one builder and read
+ * by the other's restore path is silently dead, which is exactly how the
+ * tool-state fields drifted before.
+ *
+ * @param {Object} [opts]
+ * @param {boolean} [opts.thumbnail=true] include the rasterized preview
  * @returns {Object} save entry — see README.md for the field contract.
  */
-function buildSaveData() {
+function buildSaveData(opts) {
+  const wantThumb = !opts || opts.thumbnail !== false;
   const meterEl  = document.getElementById('multimeter');
   const cbEl     = document.getElementById('clipboard-panel');
   const ncvtEl   = document.getElementById('ncvt-panel');
@@ -568,7 +677,7 @@ function buildSaveData() {
     clampJawY:   _cjp ? _cjp.y : null,
     formatVersion: SAVE_FORMAT_VERSION,
     savedAt: new Date().toISOString(),
-    thumbnail: generateThumbnail()
+    thumbnail: wantThumb ? generateThumbnail() : null
   };
 }
 
@@ -581,155 +690,306 @@ function formatSaveDate(isoStr) {
   return d.toLocaleDateString(undefined, opts) + ' at ' + d.toLocaleTimeString(undefined, timeOpts);
 }
 
-function showSaveDialog() {
+/* ── Saved projects UI ────────────────────────────────────────────────────
+   Both dialogs are driven by the signed-in user's Firestore collection (see
+   cloud.js), not by localStorage. That makes them asynchronous and makes their
+   non-happy states real: connecting, signed out, unreachable, empty. Each of
+   those has to look different from the others, because an empty list rendered
+   during a failed read reads as "your projects are gone".
+
+   Rows are identified by document id, never by name. Two projects may share a
+   visible name — that is legal now, and the id is what tells them apart.
+   The id is never shown; the name is the only user-facing identifier.
+
+   No thumbnails here. They are not stored in the cloud, and re-rasterizing one
+   per row on open would cost more than it tells the user.
+   ──────────────────────────────────────────────────────────────────────── */
+
+const PROJECT_DIALOG_CLASS = 'tb-project-dialog';
+
+function closeProjectDialogs() {
+  for (const el of document.querySelectorAll('.' + PROJECT_DIALOG_CLASS)) el.remove();
+}
+
+/* Relative time reads better than a date stamp in a list whose whole point is
+   "which copy is the newest" — the absolute date is still in the title attr. */
+function formatRelative(ms) {
+  if (!ms) return 'Not yet synced';
+  const diff = Date.now() - ms;
+  if (diff < 60000) return 'Just now';
+  if (diff < 3600000) { const m = Math.floor(diff / 60000); return m + (m === 1 ? ' minute ago' : ' minutes ago'); }
+  if (diff < 86400000) { const h = Math.floor(diff / 3600000); return h + (h === 1 ? ' hour ago' : ' hours ago'); }
+  if (diff < 604800000) { const d = Math.floor(diff / 86400000); return d + (d === 1 ? ' day ago' : ' days ago'); }
+  return formatSaveDate(new Date(ms).toISOString());
+}
+
+function projectOverlay() {
   const overlay = document.createElement('div');
+  overlay.className = PROJECT_DIALOG_CLASS;
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;';
   const box = document.createElement('div');
   box.style.cssText = 'background:#fff;border-radius:10px;padding:32px;min-width:520px;max-width:620px;max-height:85vh;box-shadow:0 12px 40px rgba(0,0,0,0.25);font-family:Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;';
-
-  const existingCircuits = getSavedCircuits();
-  const existingNames = Object.keys(existingCircuits).sort();
-
-  // Build saved projects list
-  let listHTML = '';
-  if (existingNames.length > 0) {
-    listHTML = `<div style="margin-top:16px;"><div style="font-size:12px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">Saved Projects (${existingNames.length})</div><div id="save-list" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;">`;
-    for (const n of existingNames) {
-      const c = existingCircuits[n];
-      const date = formatSaveDate(c.savedAt);
-      const compCount = Array.isArray(c.components) ? c.components.length : 0;
-      const wireCount = Array.isArray(c.wires) ? c.wires.length : 0;
-      const thumbSrc = c.thumbnail || '';
-      // Project names are user text — escape for both the attribute and the label.
-      // Interpolating raw broke data-name at the first quote (so Load/Delete
-      // silently targeted a name that did not exist) and injected arbitrary HTML.
-      const nAttr = escapeHTML(n);
-      const thumbHTML = thumbSrc
-        ? `<img src="${escapeHTML(thumbSrc)}" style="width:64px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #e0e0e0;flex-shrink:0;">`
-        : `<div style="width:64px;height:40px;border-radius:4px;border:1px solid #e0e0e0;background:#f0f0f0;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#bbb" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg></div>`;
-      listHTML += `
-        <div class="save-row" data-name="${nAttr}" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;transition:border-color 0.15s,box-shadow 0.15s;">
-          ${thumbHTML}
-          <div style="flex:1;min-width:0;">
-            <div style="font-weight:600;font-size:14px;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${nAttr}</div>
-            <div style="font-size:11px;color:#888;margin-top:3px;">${compCount} components · ${wireCount} wires</div>
-            <div style="font-size:10px;color:#aaa;margin-top:1px;">${escapeHTML(date)}</div>
-          </div>
-          <div style="display:flex;gap:6px;flex-shrink:0;">
-            <button class="save-overwrite-btn" data-name="${nAttr}" title="Overwrite with current circuit" style="padding:5px 10px;border:1px solid #e0a800;border-radius:5px;background:#fff8e1;color:#b45309;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.15s;">Overwrite</button>
-            <button class="save-delete-btn" data-name="${nAttr}" title="Delete this save" style="padding:5px 8px;border:1px solid #e0e0e0;border-radius:5px;background:#fff;color:#cc0000;cursor:pointer;font-size:13px;font-weight:600;transition:background 0.15s;">&#x2715;</button>
-          </div>
-        </div>`;
-    }
-    listHTML += '</div></div>';
-  }
-
-  box.innerHTML = `
-    <h3 style="margin:0 0 20px;font-size:18px;color:#222;font-weight:700;">Save Project</h3>
-    <div style="display:flex;gap:8px;">
-      <input id="save-name" type="text" placeholder="Enter project name..." style="flex:1;padding:10px 14px;border:1px solid #d0d0d0;border-radius:6px;font-size:14px;box-sizing:border-box;outline:none;transition:border-color 0.15s;">
-      <button id="save-confirm" style="padding:10px 20px;border:none;border-radius:6px;background:#3366cc;color:#fff;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;transition:background 0.15s;">Save New</button>
-    </div>
-    <div id="save-name-warning" style="font-size:11px;color:#b45309;margin-top:6px;display:none;"></div>
-    ${listHTML}
-    <div style="display:flex;justify-content:flex-end;margin-top:20px;">
-      <button id="save-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;transition:background 0.15s;">Cancel</button>
-    </div>
-  `;
   overlay.appendChild(box);
   document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  return { overlay, box };
+}
 
-  const inp = box.querySelector('#save-name');
-  const saveBtn = box.querySelector('#save-confirm');
-  const warning = box.querySelector('#save-name-warning');
-  inp.focus();
+/* The four states a cloud-backed list can be in besides "here are your rows".
+   Kept in one place so Save and Load cannot drift into describing the same
+   condition two different ways. */
+function projectStateMessage(err) {
+  const status = window.TBCloud ? TBCloud.status() : 'error';
+  if (status === 'connecting') return { tone: 'wait',  text: 'Connecting to your account…' };
+  if (status === 'signed-out') return { tone: 'warn',  text: 'Sign in to save and sync projects across your devices.' };
+  if (status === 'error' || err) {
+    return { tone: 'error', text: 'Could not reach your saved projects. Check your connection and try again.' };
+  }
+  return null;
+}
 
-  // Update button state when name matches an existing save
-  inp.addEventListener('input', () => {
-    const name = inp.value.trim();
-    inp.style.borderColor = '#d0d0d0';
-    if (name && existingCircuits[name]) {
-      saveBtn.textContent = 'Overwrite';
-      saveBtn.style.background = '#d97706';
-      warning.textContent = `"${name}" already exists — clicking will overwrite it.`;
-      warning.style.display = 'block';
-    } else {
-      saveBtn.textContent = 'Save New';
-      saveBtn.style.background = '#3366cc';
-      warning.style.display = 'none';
-    }
+function renderStateBlock(state) {
+  const colors = { wait: '#888', warn: '#b45309', error: '#991b1b' };
+  return '<p style="color:' + colors[state.tone] + ';text-align:center;padding:24px 12px;font-size:13.5px;">'
+       + escapeHTML(state.text) + '</p>';
+}
+
+/* Shared row list used by both dialogs. `mode` decides which controls appear.
+   Returns the container so callers can re-render just the list. */
+function renderProjectRows(rows, mode) {
+  if (!rows.length) {
+    return '<p style="color:#888;text-align:center;padding:24px 0;">No saved projects yet.</p>';
+  }
+  let html = '<div id="tb-project-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;max-height:340px;">';
+  for (const r of rows) {
+    const nAttr = escapeHTML(r.name);      // user text — escape for attribute and label
+    const idAttr = escapeHTML(r.id);
+    const when = escapeHTML(formatRelative(r.updatedAt));
+    const whenTitle = r.updatedAt ? escapeHTML(formatSaveDate(new Date(r.updatedAt).toISOString())) : '';
+    const broken = r.circuit ? '' :
+      '<div style="font-size:11px;color:#991b1b;margin-top:2px;">Unreadable — this project cannot be opened</div>';
+    const controls = mode === 'save'
+      ? '<button class="tb-p-overwrite" data-id="' + idAttr + '" title="Save the current circuit over this project" style="padding:5px 10px;border:1px solid #e0a800;border-radius:5px;background:#fff8e1;color:#b45309;cursor:pointer;font-size:11px;font-weight:600;">Overwrite</button>'
+      : '';
+    html +=
+      '<div class="tb-p-row" data-id="' + idAttr + '" data-name="' + nAttr + '" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;' + (mode === 'load' ? 'cursor:pointer;' : '') + '">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div class="tb-p-name" style="font-weight:600;font-size:14px;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + nAttr + '</div>' +
+          '<div style="font-size:11px;color:#888;margin-top:3px;">' + r.componentCount + ' components · ' + r.wireCount + ' wires</div>' +
+          '<div style="font-size:10px;color:#aaa;margin-top:1px;" title="' + whenTitle + '">' + when + '</div>' +
+          broken +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+          controls +
+          '<button class="tb-p-rename" data-id="' + idAttr + '" title="Rename" style="padding:5px 10px;border:1px solid #d0d0d0;border-radius:5px;background:#fff;color:#3366cc;cursor:pointer;font-size:11px;font-weight:600;">Rename</button>' +
+          '<button class="tb-p-delete" data-id="' + idAttr + '" title="Delete" style="padding:5px 8px;border:1px solid #e0e0e0;border-radius:5px;background:#fff;color:#cc0000;cursor:pointer;font-size:13px;font-weight:600;">&#x2715;</button>' +
+        '</div>' +
+      '</div>';
+  }
+  return html + '</div>';
+}
+
+/* Rename and delete are identical in both dialogs, so they are wired once.
+   `refresh` re-opens the dialog against fresh data rather than patching the DOM
+   — the collection may have moved on another device since it was drawn. */
+function wireRowActions(box, rows, refresh) {
+  const byId = {};
+  for (const r of rows) byId[r.id] = r;
+
+  box.querySelectorAll('.tb-p-rename').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const row = byId[btn.dataset.id];
+      if (!row) return;
+      const next = prompt('Rename project:', row.name);
+      if (next === null) return;
+      const trimmed = next.trim();
+      if (!trimmed) { alert('A project needs a name.'); return; }
+      if (trimmed === row.name) return;
+      btn.disabled = true;
+      TBCloud.rename(row.id, trimmed).then(res => {
+        /* Renaming the project that is currently open has to move the open
+           project's name too, or Export would go on proposing the old one. */
+        if (currentProjectId === row.id) currentProjectName = res.name;
+        setStatus(res.queued ? `Renamed to "${res.name}" — will sync when back online`
+                             : `Renamed to "${res.name}"`);
+        refresh();
+      }).catch(err => {
+        btn.disabled = false;
+        alert('Could not rename this project.\n\n' + (err && err.message ? err.message : err));
+      });
+    });
   });
 
-  // Row hover effects
-  box.querySelectorAll('.save-row').forEach(row => {
+  box.querySelectorAll('.tb-p-delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const row = byId[btn.dataset.id];
+      if (!row) return;
+      if (!confirm(`Delete "${row.name}"?\nThis removes it from every device signed in to your account.`)) return;
+      btn.disabled = true;
+      TBCloud.remove(row.id).then(res => {
+        /* The open circuit stays on the canvas — deleting a save is not a
+           request to lose the work in front of you — but it is no longer a
+           saved project, so it stops claiming that document. */
+        if (currentProjectId === row.id) setCurrentProject(null, currentProjectName, null);
+        setStatus(res.queued ? 'Deleted — will sync when back online' : `Deleted "${row.name}"`);
+        refresh();
+      }).catch(err => {
+        btn.disabled = false;
+        alert('Could not delete this project.\n\n' + (err && err.message ? err.message : err));
+      });
+    });
+  });
+
+  box.querySelectorAll('.tb-p-row').forEach(row => {
     row.addEventListener('mouseenter', () => { row.style.borderColor = '#b0c4ff'; row.style.boxShadow = '0 2px 8px rgba(0,0,0,0.06)'; });
     row.addEventListener('mouseleave', () => { row.style.borderColor = '#e5e7eb'; row.style.boxShadow = 'none'; });
   });
-  box.querySelectorAll('.save-overwrite-btn').forEach(btn => {
-    btn.addEventListener('mouseenter', () => { btn.style.background = '#fef3c7'; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = '#fff8e1'; });
-  });
-  box.querySelectorAll('.save-delete-btn').forEach(btn => {
-    btn.addEventListener('mouseenter', () => { btn.style.background = '#fef2f2'; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = '#fff'; });
-  });
+}
 
-  // Overwrite button on each row
-  box.querySelectorAll('.save-overwrite-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const name = btn.dataset.name;
-      if (!confirm(`Overwrite "${name}"?\nThis cannot be undone.`)) return;
-      const circuits = getSavedCircuits();
-      circuits[name] = buildSaveData();
-      saveSavedCircuits(circuits);
-      currentProjectName = name;
-      document.body.removeChild(overlay);
-      setStatus(`Project saved over "${name}"`);
-    });
-  });
+/* Fetch the list, then hand it to `draw`. The dialog is put on screen straight
+   away in its loading state rather than after the round trip, so a slow network
+   looks like a dialog that is working instead of a button that did nothing. */
+function openProjectDialog(mode, title, draw) {
+  closeProjectDialogs();
+  const { overlay, box } = projectOverlay();
+  const heading = '<h3 style="margin:0 0 20px;font-size:18px;color:#222;font-weight:700;">' + title + '</h3>';
+  const cancelRow = '<div style="display:flex;justify-content:flex-end;margin-top:20px;">'
+    + '<button class="tb-p-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;">Cancel</button></div>';
 
-  // Delete button on each row
-  box.querySelectorAll('.save-delete-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const name = btn.dataset.name;
-      if (!confirm(`Delete "${name}"?`)) return;
-      const circuits = getSavedCircuits();
-      delete circuits[name];
-      saveSavedCircuits(circuits);
-      // Remove the row from the list
-      const row = btn.closest('.save-row');
-      if (row) row.remove();
-      // Update count label
-      const remaining = box.querySelectorAll('.save-row').length;
-      const countLabel = box.querySelector('#save-list')?.parentElement?.querySelector('div');
-      if (countLabel && remaining > 0) countLabel.textContent = `Saved Projects (${remaining})`;
-      else if (remaining === 0) {
-        const listWrap = box.querySelector('#save-list')?.parentElement;
-        if (listWrap) listWrap.remove();
-      }
-      // Update input warning if name matches deleted
-      inp.dispatchEvent(new Event('input'));
-    });
-  });
-
-  // Save new / overwrite via input
-  const doSave = () => {
-    const name = inp.value.trim();
-    if (!name) { inp.style.borderColor = '#cc0000'; inp.focus(); return; }
-    const circuits = getSavedCircuits();
-    if (circuits[name] && !confirm(`Overwrite "${name}"?\nThis cannot be undone.`)) return;
-    circuits[name] = buildSaveData();
-    saveSavedCircuits(circuits);
-    currentProjectName = name;
-    document.body.removeChild(overlay);
-    setStatus(`Project saved as "${name}"`);
+  const wireCancel = () => {
+    const c = box.querySelector('.tb-p-cancel');
+    if (c) c.addEventListener('click', () => overlay.remove());
   };
-  saveBtn.addEventListener('click', doSave);
-  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
-  box.querySelector('#save-cancel').addEventListener('click', () => document.body.removeChild(overlay));
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) document.body.removeChild(overlay); });
+
+  const blocked = projectStateMessage(null);
+  if (blocked && blocked.tone !== 'wait') {
+    box.innerHTML = heading + renderStateBlock(blocked) + cancelRow;
+    wireCancel();
+    return;
+  }
+
+  box.innerHTML = heading + renderStateBlock({ tone: 'wait', text: 'Loading your projects…' }) + cancelRow;
+  wireCancel();
+
+  TBCloud.list().then(rows => {
+    if (!overlay.isConnected) return;      // dismissed while we were waiting
+    draw(overlay, box, rows, heading, cancelRow, wireCancel);
+  }).catch(err => {
+    if (!overlay.isConnected) return;
+    console.warn('[projects] list failed', err);
+    const state = projectStateMessage(err) || { tone: 'error', text: 'Could not load your saved projects.' };
+    box.innerHTML = heading + renderStateBlock(state)
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">'
+      + '<button class="tb-p-retry" style="padding:8px 20px;border:none;border-radius:6px;background:#3366cc;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Try again</button>'
+      + '<button class="tb-p-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;">Cancel</button></div>';
+    wireCancel();
+    const retry = box.querySelector('.tb-p-retry');
+    if (retry) retry.addEventListener('click', () => openProjectDialog(mode, title, draw));
+  });
+}
+
+function showSaveDialog() {
+  openProjectDialog('save', 'Save Project', (overlay, box, rows, heading, cancelRow, wireCancel) => {
+    const refresh = () => showSaveDialog();
+    box.innerHTML = heading +
+      '<div style="display:flex;gap:8px;">' +
+        '<input id="tb-p-newname" type="text" placeholder="Enter project name..." maxlength="' + TBCloud.maxName + '" style="flex:1;padding:10px 14px;border:1px solid #d0d0d0;border-radius:6px;font-size:14px;box-sizing:border-box;outline:none;">' +
+        '<button id="tb-p-savenew" style="padding:10px 20px;border:none;border-radius:6px;background:#3366cc;color:#fff;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;">Save New</button>' +
+      '</div>' +
+      '<div id="tb-p-warn" style="font-size:11px;color:#b45309;margin-top:6px;display:none;"></div>' +
+      (rows.length
+        ? '<div style="margin-top:16px;"><div style="font-size:12px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">Saved Projects (' + rows.length + ')</div>' + renderProjectRows(rows, 'save') + '</div>'
+        : '') +
+      cancelRow;
+    wireCancel();
+    wireRowActions(box, rows, refresh);
+
+    const inp  = box.querySelector('#tb-p-newname');
+    const warn = box.querySelector('#tb-p-warn');
+    inp.value = currentProjectName || '';
+    inp.focus();
+    inp.select();
+
+    /* A duplicate name is allowed — the document id keeps the projects apart —
+       but it is worth saying out loud, because the list will then show two rows
+       the user cannot tell apart by name alone. */
+    inp.addEventListener('input', () => {
+      const v = inp.value.trim();
+      const clash = v && rows.some(r => r.name === v);
+      warn.style.display = clash ? 'block' : 'none';
+      if (clash) warn.textContent = 'You already have a project called "' + v + '". This will be saved as a separate project.';
+    });
+
+    const saveNew = () => {
+      const name = inp.value.trim();
+      if (!name) { inp.style.borderColor = '#cc0000'; inp.focus(); return; }
+      const btn = box.querySelector('#tb-p-savenew');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      TBCloud.create(name, buildSaveData({ thumbnail: false })).then(res => {
+        setCurrentProject(res.id, name, Date.now());
+        overlay.remove();
+        setStatus(res.queued ? `Saved "${name}" — will sync when back online` : `Project saved as "${name}"`);
+      }).catch(err => {
+        btn.disabled = false; btn.textContent = 'Save New';
+        console.warn('[projects] create failed', err);
+        alert('Could not save this project.\n\n' + (err && err.message ? err.message : err));
+      });
+    };
+    box.querySelector('#tb-p-savenew').addEventListener('click', saveNew);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveNew(); });
+
+    box.querySelectorAll('.tb-p-overwrite').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const row = rows.filter(r => r.id === btn.dataset.id)[0];
+        if (!row) return;
+        if (!confirm(`Overwrite "${row.name}" with the current circuit?`)) return;
+        btn.disabled = true; btn.textContent = 'Saving…';
+        const payload = buildSaveData({ thumbnail: false });
+        TBCloud.overwrite(row.id, payload, row.updatedAt).then(res => {
+          setCurrentProject(row.id, row.name, Date.now());
+          overlay.remove();
+          setStatus(res.queued ? `Saved over "${row.name}" — will sync when back online`
+                               : `Project saved over "${row.name}"`);
+        }).catch(err => {
+          btn.disabled = false; btn.textContent = 'Overwrite';
+          /* Two devices wrote the same project. Never resolve this by
+             whichever request happened to arrive second — say what the other
+             copy is and let the user decide which one survives. */
+          if (err && err.code === 'conflict') {
+            const other = formatRelative(err.serverUpdatedAt);
+            if (confirm(
+                `"${row.name}" was changed on another device ${other.toLowerCase()}.\n\n` +
+                'OK to overwrite that newer version with what is on screen, or ' +
+                'Cancel to keep it and save this as a new project instead.')) {
+              btn.disabled = true; btn.textContent = 'Saving…';
+              TBCloud.forceOverwrite(row.id, payload).then(res2 => {
+                setCurrentProject(row.id, row.name, Date.now());
+                overlay.remove();
+                setStatus(`Project saved over "${row.name}"`);
+              }).catch(e2 => {
+                btn.disabled = false; btn.textContent = 'Overwrite';
+                alert('Could not save this project.\n\n' + (e2 && e2.message ? e2.message : e2));
+              });
+            } else {
+              overlay.remove();
+              showSaveDialog();
+            }
+            return;
+          }
+          console.warn('[projects] overwrite failed', err);
+          alert('Could not save this project.\n\n' + (err && err.message ? err.message : err));
+        });
+      });
+    });
+
+    box.querySelectorAll('.tb-p-overwrite').forEach(btn => {
+      btn.addEventListener('mouseenter', () => { btn.style.background = '#fef3c7'; });
+      btn.addEventListener('mouseleave', () => { btn.style.background = '#fff8e1'; });
+    });
+  });
 }
 
 /**
@@ -858,98 +1118,64 @@ function applyLoadedCircuit(c, label) {
   }
 
   selectedItem = null; hidePropsPanel();
-  currentProjectName = label;
+  /* Clears the document id as well as setting the name. A restore through this
+     path is not, by itself, a claim to any cloud document — the Load dialog
+     re-establishes the id straight after, and every other caller (file import,
+     future restore paths) genuinely has no document to point at. Leaving a
+     stale id here would aim the next Save-over at the previously open
+     project. */
+  setCurrentProject(null, label, null);
   autoSave();
   render();
   setStatus(`Loaded "${label}"`);
 }
 
 function showLoadDialog() {
-  const circuits = getSavedCircuits();
-  const names = Object.keys(circuits);
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  const box = document.createElement('div');
-  box.style.cssText = 'background:#fff;border-radius:10px;padding:32px;min-width:520px;max-width:620px;max-height:85vh;box-shadow:0 12px 40px rgba(0,0,0,0.25);font-family:Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;';
+  openProjectDialog('load', 'Load Project', (overlay, box, rows, heading, cancelRow, wireCancel) => {
+    const refresh = () => showLoadDialog();
+    box.innerHTML = heading + renderProjectRows(rows, 'load') + cancelRow;
+    wireCancel();
+    wireRowActions(box, rows, refresh);
 
-  let listHTML = '';
-  if (names.length === 0) {
-    listHTML = '<p style="color:#888;text-align:center;padding:24px 0;">No saved projects yet.</p>';
-  } else {
-    listHTML = '<div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;">';
-    for (const name of names.sort()) {
-      const c = circuits[name];
-      const date = formatSaveDate(c.savedAt);
-      const compCount = Array.isArray(c.components) ? c.components.length : 0;
-      const wireCount = Array.isArray(c.wires) ? c.wires.length : 0;
-      const thumbSrc = c.thumbnail || '';
-      const nAttr = escapeHTML(name); // user-supplied — escape for attribute + label
-      const thumbHTML = thumbSrc
-        ? `<img src="${escapeHTML(thumbSrc)}" style="width:64px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #e0e0e0;flex-shrink:0;">`
-        : `<div style="width:64px;height:40px;border-radius:4px;border:1px solid #e0e0e0;background:#f0f0f0;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#bbb" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg></div>`;
-      listHTML += `
-        <div class="circuit-item" data-name="${nAttr}" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s;">
-          ${thumbHTML}
-          <div style="flex:1;min-width:0;">
-            <div style="font-weight:600;font-size:14px;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${nAttr}</div>
-            <div style="font-size:11px;color:#888;margin-top:3px;">${compCount} components · ${wireCount} wires</div>
-            <div style="font-size:10px;color:#aaa;margin-top:1px;">${escapeHTML(date)}</div>
-          </div>
-          <button class="del-circuit" data-name="${nAttr}" title="Delete" style="padding:5px 8px;border:1px solid #e0e0e0;border-radius:5px;background:#fff;color:#cc0000;cursor:pointer;font-size:13px;font-weight:600;transition:background 0.15s;flex-shrink:0;">&#x2715;</button>
-        </div>`;
-    }
-    listHTML += '</div>';
-  }
+    box.querySelectorAll('.tb-p-row').forEach(item => {
+      item.addEventListener('click', (e) => {
+        /* The row is the click target; its own buttons are not. */
+        if (e.target.closest('.tb-p-rename, .tb-p-delete')) return;
+        const id = item.dataset.id;
+        const listed = rows.filter(r => r.id === id)[0];
+        item.style.opacity = '0.6';
+        /* Re-read rather than loading the copy fetched when the dialog opened —
+           it may be seconds stale, and this is the read whose `updatedAt`
+           becomes the conflict basis for the next save. */
+        TBCloud.get(id).then(row => {
+          if (!row) { alert('That project no longer exists.'); overlay.remove(); return; }
+          if (!row.circuit) {
+            /* Envelope survived, payload did not. Refuse rather than handing
+               the restore path something that is not a circuit. */
+            alert(`"${row.name}" could not be opened — its saved data is unreadable.`);
+            item.style.opacity = '1';
+            return;
+          }
+          overlay.remove();
+          /* Untrusted, exactly like localStorage and picked files: everything
+             below this line is the same single restore path, sanitizers and
+             all. Nothing from Firestore reaches the renderer or the solver
+             without going through it. */
+          applyLoadedCircuit(row.circuit, row.name);
+          setCurrentProject(row.id, row.name, row.updatedAt);
+        }).catch(err => {
+          item.style.opacity = '1';
+          console.warn('[projects] load failed', err);
+          alert('Could not open this project.\n\n' + (err && err.message ? err.message : err));
+        });
+      });
+    });
 
-  box.innerHTML = `
-    <h3 style="margin:0 0 20px;font-size:18px;color:#222;font-weight:700;">Load Project</h3>
-    ${listHTML}
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
-      <button id="load-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;transition:background 0.15s;">Cancel</button>
-    </div>
-  `;
-  overlay.appendChild(box);
-  document.body.appendChild(overlay);
-
-  // Hover effects
-  box.querySelectorAll('.circuit-item').forEach(item => {
-    item.addEventListener('mouseenter', () => { item.style.borderColor = '#b0c4ff'; item.style.boxShadow = '0 2px 8px rgba(0,0,0,0.06)'; });
-    item.addEventListener('mouseleave', () => { item.style.borderColor = '#e5e7eb'; item.style.boxShadow = 'none'; });
-  });
-  box.querySelectorAll('.del-circuit').forEach(btn => {
-    btn.addEventListener('mouseenter', () => { btn.style.background = '#fef2f2'; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = '#fff'; });
-  });
-
-  // Load on click
-  box.querySelectorAll('.circuit-item').forEach(item => {
-    item.addEventListener('click', (e) => {
-      if (e.target.classList.contains('del-circuit')) return;
-      const name = item.dataset.name;
-      const c = circuits[name];
-      if (c) {
-        applyLoadedCircuit(c, name);
-      }
-      document.body.removeChild(overlay);
+    box.querySelectorAll('.tb-p-delete, .tb-p-rename').forEach(btn => {
+      btn.addEventListener('mouseenter', () => { btn.style.background = '#f7f7f7'; });
+      btn.addEventListener('mouseleave', () => { btn.style.background = '#fff'; });
     });
   });
-
-  // Delete button
-  box.querySelectorAll('.del-circuit').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const name = btn.dataset.name;
-      if (confirm(`Delete "${name}"?`)) {
-        delete circuits[name];
-        saveSavedCircuits(circuits);
-        document.body.removeChild(overlay);
-        showLoadDialog(); // refresh
-      }
-    });
-  });
-
-  box.querySelector('#load-cancel').addEventListener('click', () => document.body.removeChild(overlay));
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) document.body.removeChild(overlay); });
 }
 
 document.getElementById('btn-save').addEventListener('click', showSaveDialog);

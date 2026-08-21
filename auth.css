@@ -4,9 +4,9 @@
    load styles.css (and must not — the app stylesheet sets a fixed-height,
    non-scrolling body that would break the manual).
 
-   #tb-auth sits at z 99998, just under index.html's splash loader, so a
-   signed-out visitor never sees an uncovered frame between the two. It borrows
-   the loader's palette: near-black ground, amber accent.
+   #tb-auth sits at z 99998, above everything either page draws, so it covers
+   the frame from the first paint rather than after a script runs. Near-black
+   ground, amber accent.
 
    SPECIFICITY: every rule below is scoped under #tb-auth, deliberately. The
    gate drops into two pages with unrelated stylesheets, so it needs a reset
@@ -59,6 +59,35 @@
   width: 100%;
   max-width: 380px;
   margin: auto;                  /* centres when short, scrolls when tall */
+  /* Held back, then eased in. On a warm cache the whole sign-in check takes
+     tens of milliseconds, so a card that paints immediately is drawn and
+     dismissed inside one blink -- the logo flashed on every refresh. The delay
+     outlasts that check, so a returning visitor goes dark cover -> app with
+     nothing flickering in between, and a visitor who really has to sign in
+     gets a deliberate entrance instead of a pop.
+
+     Deliberately CSS-only, with no class for script to toggle: auth.css and
+     auth.js are cached independently, and a stale script that never ran would
+     otherwise leave the card invisible for good. `both` makes the delay itself
+     the hidden state and the animation self-reveals with no JS at all. */
+  animation: tb-auth-rise 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) 0.45s both;
+}
+/* Freeze rather than clear. Clearing the animation would snap the card to its
+   fully-drawn state just as the cover starts fading -- reinstating the flash
+   this is here to remove. Paused holds whatever the card had reached: still
+   hidden if the check beat the delay, fully drawn if it did not, and either
+   way it leaves with the cover. */
+#tb-auth.tb-auth-done #tb-auth-card { animation-play-state: paused; }
+
+@keyframes tb-auth-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.965); }
+  to   { opacity: 1; transform: none; }
+}
+/* No movement, but keep the delay: the flash is a legibility problem, not a
+   decorative one, and revealing instantly would hand it straight back. */
+@keyframes tb-auth-appear {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* The simulator's top-left mark, redrawn for a dark ground
@@ -384,4 +413,8 @@ html.tb-gated, html.tb-gated body { overflow: hidden; }
 
 @media (prefers-reduced-motion: reduce) {
   #tb-auth, #tb-auth .tb-btn { transition: none; }
+  #tb-auth #tb-auth-card {
+    animation-name: tb-auth-appear;
+    animation-duration: 0.01s;
+  }
 }

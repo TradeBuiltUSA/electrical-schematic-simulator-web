@@ -24,7 +24,7 @@
 <meta property="og:image:height" content="640">
 <meta name="twitter:card" content="summary_large_image">
 
-<link rel="stylesheet" href="auth.css?v=2">
+<link rel="stylesheet" href="auth.css?v=3">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f8f9fa; color: #222; line-height: 1.7; }
@@ -88,7 +88,18 @@
     <div id="tb-auth-body">
       <p class="tb-auth-note">Checking your sign-in&hellip;</p>
     </div>
-    <p id="tb-auth-legal">TradeBuilt&trade; &mdash; proprietary software. All rights reserved.</p>
+    <!-- Keep the id on the direct child of #tb-auth-card: auth.js inserts
+         #tb-auth-body before it, and insertBefore needs a real child. The
+         colophon mirrors the footer on the simulator and the manual, restyled
+         for the gate's dark palette. -->
+    <footer id="tb-auth-legal">
+      <p class="tb-auth-prop">TradeBuilt&trade; &mdash; proprietary software.</p>
+      <p class="tb-auth-colophon">
+        <span class="tb-auth-vet">Veteran Owned <svg class="tb-auth-flag" viewBox="0 0 19 10" width="19" height="10" role="img" aria-label="United States" focusable="false"><rect width="19" height="10" fill="#B31942"/><g fill="#fff"><rect y="0.77" width="19" height="0.77"/><rect y="2.31" width="19" height="0.77"/><rect y="3.85" width="19" height="0.77"/><rect y="5.38" width="19" height="0.77"/><rect y="6.92" width="19" height="0.77"/><rect y="8.46" width="19" height="0.77"/></g><rect width="7.6" height="5.38" fill="#0A3161"/><g fill="#fff"><circle cx="1.1" cy="1.1" r="0.42"/><circle cx="2.7" cy="1.1" r="0.42"/><circle cx="4.3" cy="1.1" r="0.42"/><circle cx="5.9" cy="1.1" r="0.42"/><circle cx="1.9" cy="2.24" r="0.42"/><circle cx="3.5" cy="2.24" r="0.42"/><circle cx="5.1" cy="2.24" r="0.42"/><circle cx="1.1" cy="3.38" r="0.42"/><circle cx="2.7" cy="3.38" r="0.42"/><circle cx="4.3" cy="3.38" r="0.42"/><circle cx="5.9" cy="3.38" r="0.42"/><circle cx="1.9" cy="4.52" r="0.42"/><circle cx="3.5" cy="4.52" r="0.42"/><circle cx="5.1" cy="4.52" r="0.42"/></g></svg></span>
+        <span class="tb-auth-sep" aria-hidden="true">|</span>
+        <span class="tb-auth-copy">&copy; 2026 TradeBuilt&#8482; USA &middot; All rights reserved.</span>
+      </p>
+    </footer>
   </div>
 </div>
 

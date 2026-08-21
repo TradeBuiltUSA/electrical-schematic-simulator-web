@@ -91,11 +91,52 @@
   line-height: 1.6;
   color: rgba(255, 255, 255, 0.5);
 }
+/* Mirrors the footer on the simulator and the manual — same wording, dark
+   palette instead of the light grey bar. The hairline is what separates it
+   from the card above; the text itself stays legible rather than whispering. */
 #tb-auth #tb-auth-legal {
-  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  margin-top: 10px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.55);
+}
+#tb-auth .tb-auth-prop {
   font-size: 10.5px;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.22);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+#tb-auth .tb-auth-colophon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px 10px;                 /* the row wraps on a narrow phone */
+}
+#tb-auth .tb-auth-vet {
+  font-weight: 700;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.75);
+}
+#tb-auth .tb-auth-flag {
+  vertical-align: -1px;
+  margin-left: 2px;
+  border-radius: 1px;
+}
+#tb-auth .tb-auth-sep { color: rgba(255, 255, 255, 0.25); }
+#tb-auth .tb-auth-copy { white-space: nowrap; }
+/* Too narrow for one line: stack the two halves rather than wrap and leave the
+   divider dangling at the end of the first row. */
+@media (max-width: 430px) {
+  #tb-auth .tb-auth-colophon { flex-direction: column; gap: 3px; }
+  #tb-auth .tb-auth-sep { display: none; }
 }
 
 /* ── Buttons ── */
@@ -167,7 +208,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.55);
   font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -177,7 +218,7 @@
   content: '';
   flex: 1;
   height: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 /* ── Form ── */
@@ -194,7 +235,7 @@
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.72);
 }
 
 #tb-auth input[type="text"],
@@ -210,7 +251,7 @@
   font-size: 15px;               /* under 16px makes iPad Safari zoom on focus */
   transition: border-color 0.15s ease, background 0.15s ease;
 }
-#tb-auth input::placeholder { color: rgba(255, 255, 255, 0.28); }
+#tb-auth input::placeholder { color: rgba(255, 255, 255, 0.4); }
 #tb-auth input:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.26); }
 #tb-auth input:focus {
   outline: none;
@@ -260,7 +301,7 @@
   margin-top: -6px;
   font-size: 11.5px;
   line-height: 1.45;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.5);
 }
 #tb-auth .tb-caps {
   font-size: 11.5px;
@@ -281,7 +322,7 @@
   gap: 7px;
   font-size: 12.5px;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.68);
   cursor: pointer;
 }
 #tb-auth input[type="checkbox"] {
@@ -314,7 +355,7 @@
 
 #tb-auth .tb-foot {
   font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 /* ── Host page ── */

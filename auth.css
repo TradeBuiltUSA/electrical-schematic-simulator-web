@@ -266,6 +266,16 @@
   text-align: left;
 }
 #tb-auth .tb-field { display: flex; flex-direction: column; gap: 5px; }
+/* First and last name share a row. The wrap is driven by the basis rather
+   than a viewport query on purpose: the card is a fixed 380px at every screen
+   size, so viewport width says nothing about how much room these two have.
+   Below roughly 270px of card the pair stacks on its own. */
+#tb-auth .tb-field-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 10px;                /* row gap matches the form's field spacing */
+}
+#tb-auth .tb-field-pair > .tb-field { flex: 1 1 130px; min-width: 0; }
 #tb-auth .tb-field > label {
   font-size: 11px;
   font-weight: 700;
@@ -333,11 +343,61 @@
 }
 #tb-auth .tb-field-err:empty { display: none; }
 
-#tb-auth .tb-hint {
-  margin-top: -6px;
+/* Live password requirements. Three states, and the middle one matters:
+   "pending" is a rule not reached yet, and stays muted — a half-typed
+   password is not a wrong one. Red is reserved for "missing", which the form
+   only switches on once the visitor has left the field or pressed submit. */
+#tb-auth .tb-reqs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 1px 0 0;
+  padding: 0;
+  list-style: none;
+}
+#tb-auth .tb-req {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11.5px;
   line-height: 1.45;
   color: rgba(255, 255, 255, 0.5);
+  transition: color 0.15s ease;
+}
+#tb-auth .tb-req-mark {
+  display: inline-flex;
+  flex: none;
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+#tb-auth .tb-req[data-state="met"] { color: #6ee7b7; }
+#tb-auth .tb-req[data-state="met"] .tb-req-mark { opacity: 1; }
+#tb-auth .tb-req[data-state="missing"] { color: #fca5a5; }
+#tb-auth .tb-req[data-state="missing"] .tb-req-mark { opacity: 0.9; }
+
+#tb-auth .tb-match {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.5);
+}
+#tb-auth .tb-match:empty { display: none; }
+#tb-auth .tb-match[data-state="ok"]  { color: #6ee7b7; }
+#tb-auth .tb-match[data-state="bad"] { color: #fca5a5; }
+
+/* Announced, never shown: the requirement list is read on focus, so the one
+   thing left to report is the moment every rule is satisfied. */
+#tb-auth .tb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 #tb-auth .tb-caps {
   font-size: 11.5px;

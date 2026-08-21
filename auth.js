@@ -151,6 +151,15 @@
     '<path d="M6.4 7.6A17 17 0 0 0 1.8 12.6S5.5 19 12 19a8.6 8.6 0 0 0 4-1"/>' +
     '<path d="M9.9 10.4a3 3 0 0 0 4.2 4.2"/><line x1="3" y1="3" x2="21" y2="21"/></svg>';
 
+  const CHECK_MARK =
+    '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" ' +
+    'stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 8.6l3.1 3.1L13 4.8"/></svg>';
+
+  const DOT_MARK =
+    '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">' +
+    '<circle cx="8" cy="8" r="2.4" fill="currentColor"/></svg>';
+
   function icon(markup, cls) {
     const span = el('span', { class: cls, 'aria-hidden': 'true' });
     span.innerHTML = markup;                 // constant markup, no user data
@@ -251,6 +260,161 @@
 
   function validEmail(v) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v);
+  }
+
+  /* ── Live password requirements ───────────────────────────────────────────
+     One place defines what a password must contain: the checklist the visitor
+     watches, the field error on submit, and the sign-up guard all read this
+     table. Adding a rule here is the whole change.
+
+     "Special character" deliberately excludes whitespace. A space satisfies
+     "not a letter or a digit" while adding almost nothing, and a trailing one
+     is invisible in a masked field — the kind of password that works once and
+     never again.
+     ──────────────────────────────────────────────────────────────────────── */
+  const PASSWORD_RULES = [
+    { label: 'At least ' + MIN_PASSWORD + ' characters',
+      need:  'at least ' + MIN_PASSWORD + ' characters',
+      test:  v => v.length >= MIN_PASSWORD },
+    { label: 'One capital letter (A–Z)',
+      need:  'one capital letter',
+      test:  v => /[A-Z]/.test(v) },
+    { label: 'One special character (! ? # $ …)',
+      need:  'one special character',
+      test:  v => /[^A-Za-z0-9\s]/.test(v) }
+  ];
+
+  function passwordMeetsRules(v) {
+    return PASSWORD_RULES.every(r => r.test(v));
+  }
+
+  /* The checklist under the password field. Two behaviours are load-bearing:
+
+     • It stays neutral until the visitor leaves the field or presses the
+       submit button. Painting a half-typed password red on the second
+       keystroke reads as scolding, and every password is invalid on its way
+       to being valid.
+
+     • The rules reach a screen reader through aria-describedby, not through a
+       live region. Three rules re-announced on every keystroke is unusable
+       noise; instead they are read once when the field takes focus, and a
+       single polite line reports the one transition that matters. */
+  function passwordChecklist(f) {
+    const listId = 'tb-req-' + (++fieldSeq);
+
+    const items = PASSWORD_RULES.map(rule => {
+      const mark = icon(DOT_MARK, 'tb-req-mark');
+      return {
+        rule: rule,
+        mark: mark,
+        met:  false,
+        li:   el('li', { class: 'tb-req', 'data-state': 'pending' },
+                [mark, el('span', { text: rule.label })])
+      };
+    });
+
+    const list = el('ul', { id: listId, class: 'tb-reqs' }, items.map(i => i.li));
+    const live = el('p', { class: 'tb-sr-only', 'aria-live': 'polite' });
+
+    /* Appended to whatever the field already points at, so the inline error
+       keeps being announced too. */
+    f.input.setAttribute('aria-describedby',
+      (f.input.getAttribute('aria-describedby') || '') + ' ' + listId);
+
+    let armed    = false;   // has the visitor finished a first attempt?
+    let allMet   = false;
+    let announced = null;
+
+    function paint() {
+      const v = f.input.value;
+      allMet = true;
+      for (const item of items) {
+        const met = item.rule.test(v);
+        if (met !== item.met) {
+          item.met = met;
+          item.mark.innerHTML = met ? CHECK_MARK : DOT_MARK;   // constant markup
+        }
+        item.li.dataset.state = met ? 'met' : (armed ? 'missing' : 'pending');
+        if (!met) allMet = false;
+      }
+      /* Only on the transition — rewriting the same sentence makes some
+         screen readers say it again. */
+      const say = allMet && v ? 'Password meets all requirements.' : '';
+      if (say !== announced) {
+        announced = say;
+        live.textContent = say;
+      }
+      return allMet;
+    }
+
+    function arm() {
+      armed = true;
+      paint();
+    }
+
+    f.input.addEventListener('input', paint);
+    /* An untouched field is not a failed one. */
+    f.input.addEventListener('blur', () => { if (f.input.value) arm(); });
+
+    f.row.insertBefore(list, f.err);
+    f.row.appendChild(live);
+
+    return {
+      arm: arm,
+      ok:  () => allMet,
+      /* What to put in the field error when submit is refused. */
+      missing: () => {
+        const gap = PASSWORD_RULES.filter(r => !r.test(f.input.value));
+        /* Each rule carries its own sentence form: lowercasing the label
+           would turn "(A–Z)" into "(a–z)". */
+        return gap.length === 1
+          ? 'Password still needs ' + gap[0].need + '.'
+          : 'Password does not meet the requirements below.';
+      }
+    };
+  }
+
+  /* Live "do these two match?" line under the confirm field. Muted while the
+     visitor is still typing the second copy, red once they have moved on. */
+  function matchIndicator(pass, conf) {
+    const line = el('p', { class: 'tb-match', 'aria-live': 'polite' });
+    let armed = false;
+    let same  = false;
+
+    function paint() {
+      const b = conf.input.value;
+      same = !!b && pass.input.value === b;
+      let text = '', state = '';
+      if (b) {
+        text  = same ? 'Passwords match' : 'Passwords do not match';
+        state = same ? 'ok' : (armed ? 'bad' : 'pending');
+      }
+      if (line.textContent !== text) line.textContent = text;
+      line.dataset.state = state;
+      return same;
+    }
+
+    function arm() {
+      armed = true;
+      paint();
+    }
+
+    pass.input.addEventListener('input', paint);
+    conf.input.addEventListener('input', paint);
+    conf.input.addEventListener('blur', () => { if (conf.input.value) arm(); });
+
+    conf.row.insertBefore(line, conf.err);
+    return { arm: arm, ok: () => same };
+  }
+
+  /* Required-field checking that reports as the visitor moves through the
+     form rather than saving everything up for the submit button. */
+  function validateOnBlur(f, check) {
+    f.input.addEventListener('blur', () => {
+      const v = f.input.value.trim();
+      if (!v) return;                       // empty is for submit to complain about
+      setFieldError(f, check(v) || '');
+    });
   }
 
   /* ── Busy state ── */
@@ -430,7 +594,13 @@
   /* ── Create account ── */
 
   function signUpView(ctx) {
-    const name  = field({ name: 'name', label: 'Full name', autocomplete: 'name' });
+    /* Two name fields rather than one "Full name". A single box has to guess
+       where the given name ends, and it guesses wrong for anyone whose name
+       does not fit "one word, then one word". */
+    const first = field({ name: 'firstName', label: 'First name',
+                          autocomplete: 'given-name' });
+    const last  = field({ name: 'lastName', label: 'Last name',
+                          autocomplete: 'family-name' });
     const email = field({ name: 'email', label: 'Email', type: 'email',
                           autocomplete: 'username', inputmode: 'email' });
     const pass  = field({ name: 'password', label: 'Password', type: 'password',
@@ -439,24 +609,49 @@
                           autocomplete: 'new-password' });
     if (ctx.email) email.input.value = ctx.email;
 
-    const hint = el('p', { class: 'tb-hint',
-      text: 'At least ' + MIN_PASSWORD + ' characters. Use something you do not use elsewhere.' });
+    const rules = passwordChecklist(pass);
+    const match = matchIndicator(pass, conf);
+
+    validateOnBlur(email, v =>
+      validEmail(v) ? '' : 'Enter a valid email address.');
+
     const msg = alertLine();
 
     const form = el('form', { class: 'tb-form', novalidate: true }, [
-      name.row, email.row, pass.row, hint, conf.row, msg, primary('Create account')
+      el('div', { class: 'tb-field-pair' }, [first.row, last.row]),
+      email.row,
+      pass.row,
+      conf.row,
+      msg,
+      primary('Create account')
     ]);
 
     form.addEventListener('submit', e => {
       e.preventDefault();
       msg.textContent = '';
-      const fullName = name.input.value.trim();
-      const address  = email.input.value.trim();
-      const password = pass.input.value;
+      const firstName = first.input.value.trim();
+      const lastName  = last.input.value.trim();
+      const address   = email.input.value.trim();
+      const password  = pass.input.value;
 
-      if (!fullName) {
-        setFieldError(name, 'Enter your name.');
-        name.input.focus();
+      /* Submit is also what arms the two live indicators: from here on an
+         unmet rule reads as an error rather than as a rule not reached yet. */
+      rules.arm();
+      match.arm();
+
+      if (!firstName) {
+        setFieldError(first, 'Enter your first name.');
+        first.input.focus();
+        return;
+      }
+      if (!lastName) {
+        setFieldError(last, 'Enter your last name.');
+        last.input.focus();
+        return;
+      }
+      if (!address) {
+        setFieldError(email, 'Enter your email address.');
+        email.input.focus();
         return;
       }
       if (!validEmail(address)) {
@@ -464,8 +659,8 @@
         email.input.focus();
         return;
       }
-      if (password.length < MIN_PASSWORD) {
-        setFieldError(pass, 'Use at least ' + MIN_PASSWORD + ' characters.');
+      if (!passwordMeetsRules(password)) {
+        setFieldError(pass, rules.missing());
         pass.input.focus();
         return;
       }
@@ -482,7 +677,7 @@
           /* onAuthStateChanged has already moved us to the verify screen by
              now; these just finish filling the account in. */
           return Promise.all([
-            user.updateProfile({ displayName: fullName }),
+            user.updateProfile({ displayName: firstName + ' ' + lastName }),
             user.sendEmailVerification()
           ]).catch(err => { console.warn('[auth] post-signup', err); });
         })
@@ -496,7 +691,7 @@
 
     return {
       state: 'signup',
-      focus: name.input,
+      focus: first.input,
       nodes: [
         sub('Create an account to save circuits and pick up where you left off.'),
         googleButton('Sign up with Google'),

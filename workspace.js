@@ -28,13 +28,202 @@ function scheduleRender() {
   requestAnimationFrame(() => { _renderScheduled = false; render(); });
 }
 
-function resizeCanvas() {
+// ═══════════════════════════════════════════════════════════════
+//  VIEWPORT AND FRAMING
+//
+//  Two scales share this file and must not be confused with each other:
+//
+//   • the canvas *backing store*, sized in physical device pixels, which is what
+//     devicePixelRatio is for — more pixels behind the same CSS box, so the
+//     drawing is sharp on a high-DPI screen;
+//   • the *camera*, which lives entirely in CSS pixels and world units and never
+//     sees devicePixelRatio at all.
+//
+//  DPR therefore changes rendering fidelity and nothing else. What the camera
+//  measures itself against is the usable CSS viewport, which is exactly what an
+//  OS scale factor moves: a 1920×1080 laptop panel at 150% hands the page a
+//  1280×720 CSS viewport, not 1920×1080. Framing against that number is what
+//  makes a Windows laptop and a Mac land on comparable views.
+// ═══════════════════════════════════════════════════════════════
+
+// Breathing room left around the schematic when the app frames it, in CSS pixels.
+const FIT_PADDING = 40;
+// The drawing area the 1:1 camera was drawn for. A viewport at least this big
+// starts at zoom 1, with every symbol at the size it was designed at; a smaller
+// one zooms out to show a comparable amount of world instead of cropping the
+// same 1:1 scale, which is what made small CSS viewports feel magnified.
+const REFERENCE_VIEW = { w: 1400, h: 800 };
+// Floor for that baseline, so a genuinely small window does not shrink an empty
+// board into unusable specks. Framing actual content keeps the full MIN_ZOOM
+// range — fitting a large schematic is worth zooming well out for.
+const MIN_BASE_ZOOM = 0.6;
+
+// The usable CSS viewport for the schematic. #canvas-wrap is the flex child the
+// topbar and sidebar have already been subtracted from, so its content box *is*
+// the drawing area, in the same CSS pixels the camera works in. Deliberately not
+// derived from window.innerWidth (which still includes the sidebar) and never
+// from devicePixelRatio.
+function getViewportCSS() {
   const wrap = document.getElementById('canvas-wrap');
+  const w = wrap ? wrap.clientWidth  : 0;
+  const h = wrap ? wrap.clientHeight : 0;
+  // A display:none ancestor, or a call before first layout, reports 0 — which
+  // would divide the fit by zero. Fall back to the reference frame instead.
+  return { w: w > 0 ? w : REFERENCE_VIEW.w, h: h > 0 ? h : REFERENCE_VIEW.h };
+}
+
+// A comment box's caption wraps to the box's width, but it is typeset at a fixed
+// *screen* size — so the lower the zoom, the fewer characters fit per line and the
+// taller the block gets. drawCommentBoxes() draws that block above the box, and
+// the fit has to know how tall it is, so both go through here rather than each
+// wrapping the text their own way.
+function commentLabelLines(cb, zoom) {
+  if (!cb.text) return [];
+  const w = Math.abs(cb.x2 - cb.x1);
+  const maxW = w - 12 / zoom - 6 / zoom;          // box width less icon and padding
+  ctx.font = `bold ${12 / zoom}px Segoe UI, sans-serif`;
+  const words = cb.text.split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const testLine = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(testLine).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// How far above its box that caption block reaches, in CSS pixels: the gap, the
+// stacked lines, and the ascent of the top one.
+function commentLabelRiseCSS(cb, zoom) {
+  const n = commentLabelLines(cb, zoom).length;
+  return n === 0 ? 0 : 6 + (n - 1) * 15 + 12;
+}
+
+// World-space bounds of everything the user expects to see framed, or null when
+// the board is empty and there is nothing to frame. Non-finite geometry is
+// skipped rather than poisoning the bounds: sanitizeComponents() already drops it
+// on load, but a live edit is not gated the same way.
+//
+// `zoom` is optional. Passing it also reserves room for the decoration that is
+// drawn outside a shape's own geometry — today that means comment captions, whose
+// block is measured at that zoom and converted back into world units. Without it
+// the bounds are the raw geometry, which is what a caller that just wants the
+// extent of the circuit is asking for.
+function getContentBoundsWorld(zoom) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  function grow(x, y) {
+    if (!isFinite(x) || !isFinite(y)) return;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  for (const c of components) {
+    grow(c.gx1 * GRID, c.gy1 * GRID);
+    grow(c.gx2 * GRID, c.gy2 * GRID);
+  }
+  for (const w of wires) {
+    grow(w.gx1 * GRID, w.gy1 * GRID);
+    grow(w.gx2 * GRID, w.gy2 * GRID);
+  }
+  // Comment boxes are already stored in world units, not grid units.
+  for (const cb of commentBoxes) {
+    grow(cb.x1, cb.y1);
+    grow(cb.x2, cb.y2);
+    if (zoom > 0) grow(cb.x1, Math.min(cb.y1, cb.y2) - commentLabelRiseCSS(cb, zoom) / zoom);
+  }
+  return minX === Infinity ? null : { minX, minY, maxX, maxY };
+}
+
+// The camera that frames `bounds` — or the reference working area, when the board
+// is empty — inside a CSS viewport. Pure: it returns the camera, callers apply it.
+//
+// Zoom is capped at 1 in both branches. Framing may zoom *out*, to bring a large
+// schematic or a small viewport into view, but it never magnifies past the scale
+// the symbols were drawn at.
+function computeFitCamera(view, bounds) {
+  let cx, cy, zoom;
+  if (bounds) {
+    // A single component has zero extent on one axis; floor it at a grid cell so
+    // the division stays finite and one part does not fill the screen.
+    const rectW = Math.max(bounds.maxX - bounds.minX, GRID);
+    const rectH = Math.max(bounds.maxY - bounds.minY, GRID);
+    cx = (bounds.minX + bounds.maxX) / 2;
+    cy = (bounds.minY + bounds.maxY) / 2;
+    const availW = Math.max(1, view.w - FIT_PADDING * 2);
+    const availH = Math.max(1, view.h - FIT_PADDING * 2);
+    zoom = clampZoom(Math.min(1, availW / rectW, availH / rectH));
+  } else {
+    cx = 0; cy = 0;
+    zoom = clampZoom(Math.max(MIN_BASE_ZOOM,
+      Math.min(1, view.w / REFERENCE_VIEW.w, view.h / REFERENCE_VIEW.h)));
+  }
+  return { camX: view.w / 2 - cx * zoom, camY: view.h / 2 - cy * zoom, camZoom: zoom };
+}
+
+// The framing a viewport actually wants, decoration included.
+//
+// Comment captions are typeset at a fixed screen size, so how much room they need
+// above their box depends on the very zoom being solved for: fit the raw geometry
+// and the caption wraps to more lines than the padding was holding room for, and
+// the top one is clipped off the edge — which bit hardest on exactly the small
+// viewports this framing exists to serve. So measure the decoration at the zoom
+// the geometry asks for, then fit again with it included. Each pass can only zoom
+// out, and the second pass moves little enough that a third would be noise the
+// padding already covers.
+function solveFitCamera(view) {
+  const raw = getContentBoundsWorld();
+  if (!raw) return computeFitCamera(view, null);
+  const first = computeFitCamera(view, raw);
+  return computeFitCamera(view, getContentBoundsWorld(first.camZoom));
+}
+
+// Frame the board in the viewport it is actually being shown in.
+//
+// This is the app's *initial* framing, and only that: it runs on first load and
+// on a load whose saved camera cannot be trusted to this viewport. It is not
+// wired to resize and never runs after the user has moved the camera themselves —
+// an auto-fit that fought the user's pan and zoom would be worse than the bug.
+function fitCameraToViewport() {
+  const cam = solveFitCamera(getViewportCSS());
+  camX = cam.camX; camY = cam.camY; camZoom = cam.camZoom;
+}
+
+// CSS size the camera was last laid against, so a resize can hold the same world
+// point at the centre instead of pinning the scene to the top-left corner.
+let _lastViewCSS = null;
+
+function resizeCanvas() {
+  const view = getViewportCSS();
+  // DPR sizes the backing store only: the buffer gets `dpr` device pixels per CSS
+  // pixel so the drawing stays sharp, while the CSS box — and therefore every
+  // number the camera is built from — is unchanged. render() cancels this out
+  // with a matching ctx.scale(dpr, dpr) before the camera transform, so the
+  // logical scene is the same size at any DPR.
   const dpr = window.devicePixelRatio || 1;
-  canvas.width  = Math.round(wrap.clientWidth  * dpr);
-  canvas.height = Math.round(wrap.clientHeight * dpr);
-  canvas.style.width  = wrap.clientWidth  + 'px';
-  canvas.style.height = wrap.clientHeight + 'px';
+  canvas.width  = Math.round(view.w * dpr);
+  canvas.height = Math.round(view.h * dpr);
+  canvas.style.width  = view.w + 'px';
+  canvas.style.height = view.h + 'px';
+
+  // Keep whatever was in the middle of the canvas in the middle of it. Zoom is
+  // left alone — a resize is not a reason to overrule a camera the user chose —
+  // and the first call has no previous frame to preserve.
+  if (_lastViewCSS && (_lastViewCSS.w !== view.w || _lastViewCSS.h !== view.h) &&
+      isFinite(camX) && isFinite(camY) && camZoom > 0) {
+    const worldCx = (_lastViewCSS.w / 2 - camX) / camZoom;
+    const worldCy = (_lastViewCSS.h / 2 - camY) / camZoom;
+    camX = view.w / 2 - worldCx * camZoom;
+    camY = view.h / 2 - worldCy * camZoom;
+  }
+  _lastViewCSS = view;
+
   invalidateCanvasRect();
   render();
 }
@@ -42,6 +231,80 @@ window.addEventListener('resize', () => {
   invalidateCanvasRect();
   resizeCanvas();
 });
+
+// The app's initial framing has to be computed against the viewport that ends up
+// on screen, and at the point engine.js runs that is not yet knowable. #canvas-wrap
+// has *a* layout by then, but not its final one: the topbar logo and the sidebar
+// artwork are still decoding, and the topbar settles ~25px shorter once they land.
+// Framing against the pre-settle height left the canvas taller than its own
+// wrapper — the bottom strip quietly clipped by overflow:hidden — and framed the
+// schematic for a viewport that never existed. How long that settling takes is
+// exactly the sort of thing that differs between one machine and the next, so it
+// is not something to race with a timeout.
+//
+// engine.js hands its initial camera decision here; until the user takes the
+// camera themselves, any change to the wrapper's box re-runs that decision against
+// the real numbers. The decision recomputes from the saved payload and the content
+// bounds rather than from the current camera, so running it again is not a second
+// approximation — it is the same answer with the right inputs.
+let _reframe = null;
+function setInitialFraming(fn) { _reframe = fn; }
+// Called the moment the camera becomes the user's: from here on the app never
+// reframes on its own, which is the line between initial framing and a pan or
+// zoom somebody chose.
+function releaseInitialFraming() { _reframe = null; }
+
+// A ResizeObserver catches every reason the drawing area can change size — an
+// image landing, a font swapping, a breakpoint moving the sidebar — not just the
+// window resizes the listener above sees.
+if (window.ResizeObserver) {
+  const wrapEl = document.getElementById('canvas-wrap');
+  if (wrapEl) {
+    new ResizeObserver(() => {
+      const view = getViewportCSS();
+      const dpr  = window.devicePixelRatio || 1;
+      // Nothing actually moved. Re-cutting the buffer to the numbers it already
+      // has would only risk feeding this observer its own output.
+      if (_lastViewCSS && _lastViewCSS.w === view.w && _lastViewCSS.h === view.h &&
+          canvas.width === Math.round(view.w * dpr)) return;
+      invalidateCanvasRect();
+      resizeCanvas();
+      if (_reframe) { _reframe(); render(); }
+    }).observe(wrapEl);
+  }
+}
+
+// The camera stops being the app's to frame the first time the user does anything
+// with the board. A pan or a zoom obviously counts, but so does placing a part:
+// reframing the board around a component somebody just added would be its own kind
+// of wrong. One capturing listener per input kind is the whole rule — every camera
+// path in the app goes through the canvas, so there is nothing to keep in sync
+// elsewhere. Releasing is idempotent, so these stay attached rather than firing
+// once: a null assignment per input event is not worth the sharper edges of `once`.
+['pointerdown', 'wheel', 'touchstart', 'keydown'].forEach(type => {
+  canvas.addEventListener(type, releaseInitialFraming, { capture: true, passive: true });
+});
+
+// devicePixelRatio can change with no resize event behind it — the window dragged
+// to a monitor with a different scale factor, or the OS scale factor changed under
+// a window that keeps its CSS size. Only the backing store is stale in that case,
+// so re-cut the buffer for sharpness and leave the camera alone. A resolution
+// media query only fires for the ratio it was built with, so each change re-arms
+// a query for the new one.
+let _dprQuery = null;
+function _onDevicePixelRatioChange() {
+  resizeCanvas();
+  watchDevicePixelRatio();
+}
+function watchDevicePixelRatio() {
+  if (!window.matchMedia) return;
+  if (_dprQuery && _dprQuery.removeEventListener) {
+    _dprQuery.removeEventListener('change', _onDevicePixelRatioChange);
+  }
+  _dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  if (_dprQuery.addEventListener) _dprQuery.addEventListener('change', _onDevicePixelRatioChange);
+}
+watchDevicePixelRatio();
 
 // Re-assert the camera transform absolutely. Used to recover after a draw call
 // throws part-way through a component, where the canvas save()/restore() stack
@@ -346,27 +609,13 @@ function drawCommentBoxes() {
     // Text label with note icon above the box
     if (cb.text) {
       const fontSize = 12 / camZoom;
-      ctx.font = `bold ${fontSize}px Segoe UI, sans-serif`;
+      const lines = commentLabelLines(cb, camZoom);   // also sets ctx.font to match
       ctx.fillStyle = '#222';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
       const pad = 6 / camZoom;
       const iconW = 12 / camZoom;
-      const maxW = w - iconW - pad;
       const lineH = 15 / camZoom;
-      const words = cb.text.split(' ');
-      const lines = [];
-      let line = '';
-      for (let i = 0; i < words.length; i++) {
-        const testLine = line ? line + ' ' + words[i] : words[i];
-        if (ctx.measureText(testLine).width > maxW && line) {
-          lines.push(line);
-          line = words[i];
-        } else {
-          line = testLine;
-        }
-      }
-      if (line) lines.push(line);
       // Draw note icon next to first line
       const firstLineY = y - pad - (lines.length - 1) * lineH;
       const iy = firstLineY - fontSize * 0.7;

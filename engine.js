@@ -341,8 +341,12 @@ function buildSaveData() {
   const ncvtEl   = document.getElementById('ncvt-panel');
   const clampEl  = document.getElementById('clamp-meter');
   const _cjp     = window._clampJawPos ? window._clampJawPos() : null;
+  const view = getViewportCSS();
   return {
     components, wires, nextId, camX, camY, camZoom, commentBoxes,
+    // The viewport the camera was framed against, so a load into a different one
+    // can renormalize instead of replaying pixel offsets that no longer fit.
+    viewW: view.w, viewH: view.h,
     simRunning,
     meterActive,
     meterLeft:   meterEl ? meterEl.style.left   : null,
@@ -607,7 +611,15 @@ function showLoadDialog() {
         // reuses ids 1..n — without this a fan from the old circuit carries its
         // spin, glow and surge timing straight onto an unrelated new component.
         resetRuntimeState();
-        applySavedCamera(c);
+        // A project saved on another machine — or the same one under a different
+        // OS scale factor — carries a camera framed for that viewport. Normalize
+        // it to this one where the save says what that viewport was, and frame
+        // the circuit outright where it does not.
+        if (!applySavedCamera(c, getViewportCSS())) fitCameraToViewport();
+        // A deliberate load owns the camera outright — the startup framing must
+        // not still be armed behind it and reframe to the circuit that was open
+        // when the page loaded.
+        releaseInitialFraming();
 
         // Sim state
         simRunning = !!c.simRunning;
@@ -1010,7 +1022,8 @@ if (saved) {
     wires = sanitizeWires(savedData.wires);
     commentBoxes = Array.isArray(savedData.commentBoxes) ? savedData.commentBoxes : [];
     nextId = savedData.nextId || 1;
-    applySavedCamera(savedData);
+    // The camera is restored further down, after resizeCanvas() has settled the
+    // viewport it has to be framed against.
     if (savedData.simRunning) simRunning = true;
     if (savedData.meterActive)     meterActive     = true;
     if (savedData.clipboardActive) clipboardActive = true;
@@ -1098,10 +1111,18 @@ if (meterActive) {
 }
 
 resizeCanvas();
-// Only center if no saved view position
-if (!savedData || savedData.camX === undefined) {
-  const dpr = window.devicePixelRatio || 1;
-  camX = canvas.width / dpr / 2;
-  camY = canvas.height / dpr / 2;
+// Camera last, once the viewport it is framed against exists. A saved camera that
+// carries its own viewport is restored — renormalized first if this viewport is
+// materially different, which is what a Windows OS scale factor of 125% or 150%
+// amounts to. Anything else — a first run, or a save predating viewW/viewH — gets
+// framed against the viewport that actually exists.
+//
+// Recomputed from `savedData` and the content bounds every time, so workspace.js
+// can re-run it once the layout finishes settling and get the right answer rather
+// than a correction applied to a wrong one.
+function applyInitialCamera() {
+  if (!applySavedCamera(savedData, getViewportCSS())) fitCameraToViewport();
 }
+applyInitialCamera();
+setInitialFraming(applyInitialCamera);
 render();

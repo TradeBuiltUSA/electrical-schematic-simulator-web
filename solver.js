@@ -79,8 +79,12 @@ function autoSave() {
     const _cjp = window._clampJawPos ? window._clampJawPos() : null;
     const clampJawX = _cjp ? _cjp.x : null;
     const clampJawY = _cjp ? _cjp.y : null;
+    // camX/camY/camZoom only frame what they framed at the viewport they were
+    // written at, so the viewport travels with them — see applySavedCamera().
+    const _view = getViewportCSS();
     localStorage.setItem('ac-simulator-circuit', JSON.stringify({
-      components, wires, nextId, camX, camY, camZoom, simRunning, commentBoxes,
+      components, wires, nextId, camX, camY, camZoom, viewW: _view.w, viewH: _view.h,
+      simRunning, commentBoxes,
       meterActive, meterLeft, meterTop, meterBottom,
       meterProbe1, meterProbe2, meterMode, meterInrushMode,
       clipboardActive, clipboardLeft, clipboardTop, clipboardWidth, clipboardHeight,

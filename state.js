@@ -158,6 +158,17 @@ function sanitizeWires(list) {
 // applies (wheel, pinch); they exist here so the storage boundary can enforce the
 // same range.
 const MIN_ZOOM = 0.1, MAX_ZOOM = 5;
+function clampZoom(z) { return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z)); }
+
+// How far the CSS viewport may drift from the one a camera was framed against
+// before the restore renormalizes instead of replaying the saved numbers
+// verbatim. 8% absorbs a scrollbar appearing or a breakpoint nudging the sidebar;
+// past that it is a different screen, a different OS scale factor, or a different
+// browser zoom, and the absolute numbers no longer mean what they meant.
+const VIEW_MATCH_TOLERANCE = 1.08;
+function axisMoved(ratio) {
+  return ratio < 1 / VIEW_MATCH_TOLERANCE || ratio > VIEW_MATCH_TOLERANCE;
+}
 
 // The camera gets the same treatment as components and wires: it is restored from
 // storage, so it is not necessarily sane. Every interactive path clamps zoom, but
@@ -169,13 +180,69 @@ const MIN_ZOOM = 0.1, MAX_ZOOM = 5;
 // direction: every component's geometry became NaN, so every one of them failed
 // to draw and got struck off, leaving the canvas permanently blank.
 // Absent fields keep the current camera, which is what the callers expect.
-function applySavedCamera(src) {
-  if (!src || typeof src !== 'object') return;
-  if (src.camX !== undefined && _isFiniteNum(src.camX)) camX = src.camX;
-  if (src.camY !== undefined && _isFiniteNum(src.camY)) camY = src.camY;
-  if (src.camZoom !== undefined && _isFiniteNum(src.camZoom)) {
-    camZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, src.camZoom));
+//
+// camX/camY/camZoom are absolute CSS-pixel quantities, so they only frame what
+// they were saved to frame at the viewport they were saved at. Restoring them
+// into a materially smaller viewport — a laptop instead of a desktop, or the same
+// laptop under a 125%/150% OS scale factor, which shrinks the CSS viewport
+// without the user changing anything — left the schematic overflowing the canvas
+// and reading as "zoomed in". `viewW`/`viewH` record that viewport so the restore
+// can renormalize rather than discard the framing the user chose: the world point
+// that was at the centre of the saved viewport is put at the centre of the current
+// one, and zoom is scaled so the *visible world area* is preserved.
+//
+// Preserving area — scaling zoom by the geometric mean of the two axis ratios —
+// rather than fitting the tighter axis is what makes the transform exactly
+// reversible: A→B then B→A returns the original camera. Fitting the tighter axis
+// looks equally reasonable for one hop, but its forward and backward factors do
+// not cancel when the aspect ratios differ, so a user working across two machines
+// would watch their zoom ratchet outward a few percent every round trip.
+//
+// Inside the tolerance nothing is touched, on either axis, so the ordinary case —
+// same machine, same window — restores byte-identically and a reload never nudges
+// a pan.
+//
+// @param {Object} src   saved payload (may be partial, stale or hand-edited)
+// @param {Object} [view] current usable viewport, `{ w, h }` in CSS pixels
+// @returns {boolean} true when the applied camera is framed for `view` and the
+//   caller should leave it alone; false when there was no usable camera, or it
+//   predates `viewW`/`viewH` and cannot be normalized — the caller should frame
+//   the board itself. The camera is still applied and clamped either way.
+function applySavedCamera(src, view) {
+  if (!src || typeof src !== 'object') return false;
+
+  const hasX = src.camX    !== undefined && _isFiniteNum(src.camX);
+  const hasY = src.camY    !== undefined && _isFiniteNum(src.camY);
+  const hasZ = src.camZoom !== undefined && _isFiniteNum(src.camZoom);
+
+  let x = hasX ? src.camX : camX;
+  let y = hasY ? src.camY : camY;
+  let z = hasZ ? clampZoom(src.camZoom) : camZoom;
+
+  const savedW = _isFiniteNum(src.viewW) && src.viewW > 0 ? src.viewW : 0;
+  const savedH = _isFiniteNum(src.viewH) && src.viewH > 0 ? src.viewH : 0;
+  // Only a camera that is complete *and* carries its viewport can be trusted or
+  // renormalized; a partial one has nothing coherent to rescale about.
+  const qualified = savedW > 0 && savedH > 0 && hasX && hasY && hasZ;
+
+  if (qualified && view && view.w > 0 && view.h > 0) {
+    const ax = view.w / savedW, ay = view.h / savedH;
+    const moved = axisMoved(ax) || axisMoved(ay);
+    if (moved) {
+      // Both axes are consulted for the decision — a viewport that kept its width
+      // but lost a third of its height still needs recentring — while the scale
+      // itself is the area-preserving mean of the two.
+      const s = Math.sqrt(ax * ay);
+      const worldCx = (savedW / 2 - x) / z;
+      const worldCy = (savedH / 2 - y) / z;
+      z = clampZoom(z * s);
+      x = view.w / 2 - worldCx * z;
+      y = view.h / 2 - worldCy * z;
+    }
   }
+
+  camX = x; camY = y; camZoom = z;
+  return qualified;
 }
 
 // AC source type helper — returns true for any AC source variant (including legacy ac_source)

@@ -31,7 +31,7 @@
 
   const SDK_BASE     = 'https://www.gstatic.com/firebasejs/10.14.1/';
   const MIN_PASSWORD = 8;      // Firebase itself only enforces 6
-  const MAX_PASSWORD = 16;     // matches the project's backend policy
+  const MAX_PASSWORD = 64;     // matches the project's backend policy
   const RESEND_WAIT  = 45;     // seconds between verification emails
   const VERIFY_POLL  = 6000;   // how often the verify screen re-checks
   const BOOT_TIMEOUT = 15000;  // give up on "checking" and offer a way out

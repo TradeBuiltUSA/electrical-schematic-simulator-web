@@ -1,0 +1,140 @@
+/* ── Sign-in gate ──
+   Shared by index.html and manual.html; behaviour lives in auth.js. The rules
+   are in their own file because manual.html is a standalone page that does not
+   load styles.css (and must not — the app stylesheet sets a fixed-height,
+   non-scrolling body that would break the manual).
+
+   #tb-auth sits at z 99998, just under index.html's splash loader, so a
+   signed-out visitor never sees an uncovered frame between the two. States are
+   driven by the data-state attribute that auth.js sets. */
+
+/* The gate is dropped into two pages with unrelated stylesheets — the manual
+   gives every h2 a blue rule and its own paragraph spacing. Neutralise that
+   here so both pages render the card identically. :where() keeps the reset at
+   zero specificity, so the per-element rules below still win — a plain
+   `#tb-auth h2` would outrank `#tb-auth-title` and undo it. */
+#tb-auth :where(h2, p) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#tb-auth {
+  position: fixed;
+  inset: 0;
+  z-index: 99998;
+  background: #080b14;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  transition: opacity 0.35s ease, visibility 0.35s ease;
+}
+#tb-auth.tb-auth-done {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+#tb-auth-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  max-width: 380px;
+  width: 100%;
+}
+#tb-auth-logo {
+  height: 72px;
+  border-radius: 14px;
+  filter:
+    drop-shadow(0 0 28px rgba(245, 158, 11, 0.55))
+    drop-shadow(0 0 8px rgba(245, 158, 11, 0.35));
+}
+#tb-auth-title {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(245, 158, 11, 0.85);
+}
+#tb-auth-sub {
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.62);
+  max-width: 30ch;
+}
+#tb-auth-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 46px;              /* comfortable touch target on iPad */
+  padding: 12px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: #fff;
+  color: #1f1f1f;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+#tb-auth-btn:hover  { background: #f1f3f4; }
+#tb-auth-btn:active { transform: scale(0.98); }
+#tb-auth-btn:focus-visible {
+  outline: 2px solid #f59e0b;
+  outline-offset: 3px;
+}
+#tb-auth-checking,
+#tb-auth-working,
+#tb-auth-offline {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.42);
+}
+#tb-auth-error {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #fca5a5;
+  min-height: 1em;
+}
+#tb-auth-legal {
+  margin-top: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.22);
+}
+
+/* Only one status line and one action are ever live at a time. */
+#tb-auth[data-state="checking"] #tb-auth-btn,
+#tb-auth[data-state="checking"] #tb-auth-sub,
+#tb-auth[data-state="working"]  #tb-auth-checking,
+#tb-auth[data-state="working"]  #tb-auth-btn,
+#tb-auth[data-state="signin"]   #tb-auth-checking,
+#tb-auth[data-state="signin"]   #tb-auth-working,
+#tb-auth[data-state="offline"]  #tb-auth-checking,
+#tb-auth[data-state="offline"]  #tb-auth-btn,
+#tb-auth[data-state="offline"]  #tb-auth-sub,
+#tb-auth #tb-auth-working,
+#tb-auth #tb-auth-offline { display: none; }
+
+#tb-auth[data-state="working"] #tb-auth-working,
+#tb-auth[data-state="offline"] #tb-auth-offline { display: block; }
+
+/* Signed-in identity above Sign Out in the Settings menu. */
+#tb-account {
+  padding: 4px 12px 6px;
+  font-size: 11.5px;
+  color: #777;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The manual scrolls; the app does not. Either way nothing behind the gate
+   should move while it is up. */
+html.tb-gated, html.tb-gated body { overflow: hidden; }

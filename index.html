@@ -26,7 +26,7 @@
 <meta name="twitter:card" content="summary_large_image">
 
 <link rel="stylesheet" href="styles.css">
-<link rel="stylesheet" href="auth.css">
+<link rel="stylesheet" href="auth.css?v=2">
 </head>
 <body>
 
@@ -748,7 +748,11 @@
 <script src="ui.js"></script>
 <script src="tools.js"></script>
 <script src="engine.js"></script>
-<script src="auth.js"></script>
+<!-- ?v= pins the gate's script and stylesheet to the markup below. These
+     files are cached independently of this page, so a bare URL lets a fresh
+     page pull a stale script that expects markup this page no longer has —
+     which freezes the gate. Bump on any change to the #tb-auth contract. -->
+<script src="auth.js?v=2"></script>
 
 <script>
 (function () {

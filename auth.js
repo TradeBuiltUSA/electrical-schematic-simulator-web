@@ -33,13 +33,37 @@
   const MIN_PASSWORD = 8;      // Firebase itself only enforces 6
   const RESEND_WAIT  = 45;     // seconds between verification emails
   const VERIFY_POLL  = 6000;   // how often the verify screen re-checks
+  const BOOT_TIMEOUT = 15000;  // give up on "checking" and offer a way out
 
   const gate = document.getElementById('tb-auth');
   if (!gate) return;
 
-  const body       = document.getElementById('tb-auth-body');
   const signOutBtn = document.getElementById('btn-signout');
   const accountEl  = document.getElementById('tb-account');
+
+  /* This script and the page that loads it are cached independently, so a
+     visitor can hold a fresh copy of one and a stale copy of the other. Never
+     assume the markup this version shipped with: build the render target when
+     the page predates it, and clear out any older gate's children.
+
+     This is not hypothetical — it is the bug that froze the gate on "Checking
+     your sign-in…". A stale script dereferenced an element a newer page had
+     dropped, threw before Firebase ever loaded, and left the overlay up with
+     no way forward. The paired defence is the ?v= on the script and stylesheet
+     URLs; bump it whenever this contract changes. */
+  let body = document.getElementById('tb-auth-body');
+  if (!body) {
+    const card = gate.querySelector('#tb-auth-card') || gate;
+    for (const stale of card.querySelectorAll(
+        '#tb-auth-sub, #tb-auth-btn, #tb-auth-checking, #tb-auth-working, ' +
+        '#tb-auth-offline, #tb-auth-error')) {
+      stale.remove();
+    }
+    body = el('div', { id: 'tb-auth-body' });
+    const legal = card.querySelector('#tb-auth-legal');
+    if (legal) card.insertBefore(body, legal);
+    else       card.appendChild(body);
+  }
 
   /* The regression harness frames the app and marks the frame URL. Both
      conditions are required: a page framed without the marker still gets the
@@ -634,10 +658,14 @@
   }
 
   function offlineView() {
+    const again = el('button', {
+      type: 'button', class: 'tb-btn tb-btn-ghost', text: 'Reload',
+      on: { click: () => location.reload() }
+    });
     return {
       state: 'offline',
-      focus: null,
-      nodes: [note('Could not reach the sign-in service. Check your connection and reload the page.')]
+      focus: again,
+      nodes: [note('Could not reach the sign-in service. Check your connection and try again.'), again]
     };
   }
 
@@ -737,6 +765,16 @@
       document.head.appendChild(s);
     });
   }
+
+  /* Last line of defence. Whatever goes wrong — a throw, a blocked SDK, an
+     onAuthStateChanged that never fires — the visitor gets a way forward
+     rather than an overlay that spins for good. */
+  setTimeout(() => {
+    if (gate.isConnected && gate.dataset.state === 'checking') {
+      console.warn('[auth] no auth state after ' + BOOT_TIMEOUT + 'ms');
+      show(offlineView, {});
+    }
+  }, BOOT_TIMEOUT);
 
   loadScript(SDK_BASE + 'firebase-app-compat.js')
     .then(() => loadScript(SDK_BASE + 'firebase-auth-compat.js'))

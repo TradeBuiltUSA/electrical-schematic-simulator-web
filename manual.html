@@ -395,6 +395,27 @@
   </ol>
   <h3>Auto-Save</h3>
   <p>The current project auto-saves on every change and restores automatically when the page is refreshed. If the circuit was energized when you closed the browser, it will restore in the energized state.</p>
+
+  <h3>Where saved projects live</h3>
+  <p>Saved projects and the auto-save are stored by your web browser, on the device you are using. They are not uploaded anywhere and no one else can see them &mdash; a project saved on one device does not appear on another, and each person using the simulator has their own separate saves.</p>
+  <p><strong>This storage is not permanent.</strong> Clearing your browser's cookies and site data deletes saved projects, and on iPad and Mac, Safari's &ldquo;Clear History and Website Data&rdquo; does the same. Safari can also discard the storage on its own if you do not visit the simulator for about a week. Export anything you want to keep.</p>
+
+  <h3>Export to a File</h3>
+  <p>Exporting writes a project to a <code>.tbss.json</code> file you keep &mdash; a backup that survives clearing your browser, and the way to move a circuit to another device or hand it to someone else.</p>
+  <ol>
+    <li>Click <strong>Settings &gt; Save Project</strong></li>
+    <li>Click <strong>Export</strong> on any saved project to export that one, or <strong>Export Current to File</strong> to export the circuit currently on the canvas without saving it first</li>
+    <li>The file downloads to your device</li>
+  </ol>
+  <p>The file holds the whole project: components, wires, comments, camera position, view options, your clipboard notes, and the position and mode of the multimeter, amp clamp, and NCV tester.</p>
+
+  <h3>Import from a File</h3>
+  <ol>
+    <li>Click <strong>Settings &gt; Load Project</strong></li>
+    <li>Click <strong>Import from File</strong> and choose a <code>.tbss.json</code> file</li>
+    <li>The project is added to your saved projects list &mdash; click it to load it</li>
+  </ol>
+  <p>Importing does not disturb the circuit currently on the canvas. If a saved project already uses the same name, you are asked whether to overwrite it or import a copy.</p>
 </div>
 
 <div class="section" id="keyboard-shortcuts">

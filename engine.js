@@ -320,6 +320,168 @@ function generateThumbnail() {
   } catch(e) { return null; }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  PROJECT FILE EXPORT / IMPORT
+// ═══════════════════════════════════════════════════════════════
+// localStorage is the only home a saved project has, and it is a fragile one:
+// clearing "cookies and other site data" wipes it, Safari's storage policy can
+// evict it after about a week of not visiting, and it never follows a user from
+// one device or browser to another. These two functions are the escape hatch —
+// they move a project between a browser and a real file the user controls.
+
+// Bumped only when a change to the save entry makes older files unreadable.
+// A file outlives the build that wrote it, so imports check this and refuse a
+// file from a future version rather than half-applying fields they can't read.
+const SAVE_FORMAT_VERSION = 1;
+const SAVE_FILE_APP = 'tradebuilt-electrical-schematic-simulator';
+
+/**
+ * Turn a project name into a safe download filename.
+ * Names are free text, so strip anything a filesystem would object to and keep
+ * a non-empty fallback.
+ */
+function projectFilename(name) {
+  const base = String(name || 'circuit')
+    .replace(/[^a-zA-Z0-9 _-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 60);
+  return (base || 'circuit') + '.tbss.json';
+}
+
+/**
+ * Write a save entry out as a file the user can keep, email, or carry to
+ * another device.
+ *
+ * The entry is wrapped rather than written bare: the wrapper carries the app
+ * id and format version that `readProjectFile()` checks on the way back in, so
+ * an unrelated .json cannot be mistaken for a circuit.
+ *
+ * @param {Object} data save entry from buildSaveData()
+ * @param {string} name project name to embed and to base the filename on
+ */
+function exportProjectFile(data, name) {
+  try {
+    const payload = {
+      app: SAVE_FILE_APP,
+      formatVersion: SAVE_FORMAT_VERSION,
+      name: String(name || 'Untitled Circuit'),
+      exportedAt: new Date().toISOString(),
+      circuit: data
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = projectFilename(name);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoking synchronously can cancel the download in some browsers; give the
+    // click a turn of the event loop to start it first.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus(`Exported "${name}"`);
+    return true;
+  } catch (e) {
+    console.warn('exportProjectFile failed', e);
+    alert('Could not export this project.\n\n' + (e && e.message ? e.message : e));
+    return false;
+  }
+}
+
+/**
+ * Parse and vet the text of a picked file.
+ *
+ * Returns `{ ok: true, name, circuit }` or `{ ok: false, error }`. This only
+ * establishes that the file is a circuit file this build can read — it does not
+ * sanitize the circuit itself. That stays the job of `applyLoadedCircuit()`,
+ * which treats the result as untrusted exactly like a localStorage entry.
+ *
+ * @param {string} text raw file contents
+ */
+function readProjectFile(text) {
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (e) { return { ok: false, error: 'That file is not valid JSON, so it is not a circuit file.' }; }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'That file does not contain a circuit.' };
+  }
+  if (parsed.app !== SAVE_FILE_APP) {
+    return { ok: false, error: 'That file was not exported from this simulator.' };
+  }
+  // A file from a newer build may use fields this one cannot read. Refuse it
+  // outright rather than importing a circuit that is silently half-applied.
+  const v = parsed.formatVersion;
+  if (typeof v !== 'number' || !isFinite(v) || v > SAVE_FORMAT_VERSION) {
+    return { ok: false, error: 'That file was saved by a newer version of the simulator. Update the page and try again.' };
+  }
+  const circuit = parsed.circuit;
+  if (!circuit || typeof circuit !== 'object' || Array.isArray(circuit) || !Array.isArray(circuit.components)) {
+    return { ok: false, error: 'That circuit file is incomplete or corrupt.' };
+  }
+  const name = (typeof parsed.name === 'string' && parsed.name.trim()) ? parsed.name.trim() : 'Imported Circuit';
+  return { ok: true, name, circuit };
+}
+
+/**
+ * Open the OS file picker and hand the chosen file's vetted contents to `onOk`.
+ * The input is created per call and discarded after: a persistent one keeps its
+ * previous selection, so re-importing the same file fires no change event.
+ *
+ * @param {function(string, Object)} onOk called with (name, circuit) on success
+ */
+function pickProjectFile(onOk) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    const cleanup = () => { if (input.parentNode) document.body.removeChild(input); };
+    if (!file) { cleanup(); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      cleanup();
+      const res = readProjectFile(String(reader.result || ''));
+      if (!res.ok) { alert('Import failed.\n\n' + res.error); return; }
+      onOk(res.name, res.circuit);
+    };
+    reader.onerror = () => { cleanup(); alert('Could not read that file.'); };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+/**
+ * Import flow: pick a file, then store it in the saved-projects library under a
+ * free name. Deliberately does not touch the open canvas — a user importing a
+ * file has not asked to lose the circuit in front of them, and the project is
+ * one click away in the Load list afterwards.
+ */
+function importProjectFile(onDone) {
+  pickProjectFile((name, circuit) => {
+    const circuits = getSavedCircuits();
+    let finalName = name;
+    if (circuits[finalName]) {
+      const overwrite = confirm(
+        `A project named "${finalName}" already exists.\n\n` +
+        'OK to overwrite it, or Cancel to import as a copy.'
+      );
+      if (!overwrite) {
+        let i = 2;
+        while (circuits[`${name} (${i})`]) i++;
+        finalName = `${name} (${i})`;
+      }
+    }
+    circuits[finalName] = circuit;
+    saveSavedCircuits(circuits);
+    setStatus(`Imported "${finalName}"`);
+    if (typeof onDone === 'function') onDone(finalName);
+  });
+}
+
 /**
  * Build a named-project save entry (the value stored under a name in
  * `ac-sim-circuits`).
@@ -369,6 +531,7 @@ function buildSaveData() {
     clampTop:    clampEl ? clampEl.style.top  : null,
     clampJawX:   _cjp ? _cjp.x : null,
     clampJawY:   _cjp ? _cjp.y : null,
+    formatVersion: SAVE_FORMAT_VERSION,
     savedAt: new Date().toISOString(),
     thumbnail: generateThumbnail()
   };
@@ -418,6 +581,7 @@ function showSaveDialog() {
             <div style="font-size:10px;color:#aaa;margin-top:1px;">${escapeHTML(date)}</div>
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;">
+            <button class="save-export-btn" data-name="${nAttr}" title="Export this project to a file" style="padding:5px 10px;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;color:#334155;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.15s;">Export</button>
             <button class="save-overwrite-btn" data-name="${nAttr}" title="Overwrite with current circuit" style="padding:5px 10px;border:1px solid #e0a800;border-radius:5px;background:#fff8e1;color:#b45309;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.15s;">Overwrite</button>
             <button class="save-delete-btn" data-name="${nAttr}" title="Delete this save" style="padding:5px 8px;border:1px solid #e0e0e0;border-radius:5px;background:#fff;color:#cc0000;cursor:pointer;font-size:13px;font-weight:600;transition:background 0.15s;">&#x2715;</button>
           </div>
@@ -434,7 +598,8 @@ function showSaveDialog() {
     </div>
     <div id="save-name-warning" style="font-size:11px;color:#b45309;margin-top:6px;display:none;"></div>
     ${listHTML}
-    <div style="display:flex;justify-content:flex-end;margin-top:20px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:8px;">
+      <button id="save-export-current" title="Download the circuit currently on the canvas as a file" style="padding:8px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer;font-size:13px;color:#334155;font-weight:600;transition:background 0.15s;">Export Current to File</button>
       <button id="save-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;transition:background 0.15s;">Cancel</button>
     </div>
   `;
@@ -474,6 +639,27 @@ function showSaveDialog() {
   box.querySelectorAll('.save-delete-btn').forEach(btn => {
     btn.addEventListener('mouseenter', () => { btn.style.background = '#fef2f2'; });
     btn.addEventListener('mouseleave', () => { btn.style.background = '#fff'; });
+  });
+
+  // Export a stored project straight to a file
+  box.querySelectorAll('.save-export-btn').forEach(btn => {
+    btn.addEventListener('mouseenter', () => { btn.style.background = '#e2e8f0'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = '#f8fafc'; });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const name = btn.dataset.name;
+      const stored = getSavedCircuits()[name];
+      if (stored) exportProjectFile(stored, name);
+    });
+  });
+
+  // Export what is on the canvas right now, without needing to save it first
+  const exportCurrentBtn = box.querySelector('#save-export-current');
+  exportCurrentBtn.addEventListener('mouseenter', () => { exportCurrentBtn.style.background = '#e2e8f0'; });
+  exportCurrentBtn.addEventListener('mouseleave', () => { exportCurrentBtn.style.background = '#f8fafc'; });
+  exportCurrentBtn.addEventListener('click', () => {
+    const typed = inp.value.trim();
+    exportProjectFile(buildSaveData(), typed || 'Untitled Circuit');
   });
 
   // Overwrite button on each row
@@ -532,6 +718,137 @@ function showSaveDialog() {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) document.body.removeChild(overlay); });
 }
 
+/**
+ * Apply a save entry to the live app: geometry, camera, sim state, view
+ * toggles, and every floating tool panel.
+ *
+ * `c` is untrusted — it comes from `localStorage` or, since export/import, from
+ * a file the user picked. Every field is therefore gated through the same
+ * validators (`sanitizeComponents`, `sanitizeWires`, `applySavedCamera`,
+ * `resetRuntimeState`, `applySavedToolState`) rather than being trusted to have
+ * the type it should. This is the single restore path shared by the Load dialog
+ * and by Import — do not add a second one.
+ *
+ * @param {Object} c     save entry (see README.md for the field contract)
+ * @param {string} label name to report in the status line
+ */
+function applyLoadedCircuit(c, label) {
+  // Create undo point for current circuit before loading new one
+  undoStack.push(getStateSnapshot());
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0; // a load is a new action — nothing to redo forward into
+  // Circuit geometry
+  components.length = 0; components.push(...sanitizeComponents(c.components));
+  wires.length = 0; wires.push(...sanitizeWires(c.wires));
+  clearRenderFailures();   // a fresh circuit gets a fresh chance to draw
+  // Same reasoning as the sanitizers above — a scalar here would break the spread.
+  commentBoxes.length = 0; commentBoxes.push(...(Array.isArray(c.commentBoxes) ? c.commentBoxes : []));
+  nextId = c.nextId || 1;
+  // Per-component runtime state is keyed by id, and the incoming circuit
+  // reuses ids 1..n — without this a fan from the old circuit carries its
+  // spin, glow and surge timing straight onto an unrelated new component.
+  resetRuntimeState();
+  // A project saved on another machine — or the same one under a different
+  // OS scale factor — carries a camera framed for that viewport. Normalize
+  // it to this one where the save says what that viewport was, and frame
+  // the circuit outright where it does not.
+  if (!applySavedCamera(c, getViewportCSS())) fitCameraToViewport();
+  // A deliberate load owns the camera outright — the startup framing must
+  // not still be armed behind it and reframe to the circuit that was open
+  // when the page loaded.
+  releaseInitialFraming();
+
+  // Sim state
+  simRunning = !!c.simRunning;
+  syncSimButton(simRunning);
+  if (simRunning) {
+    // Loaded motors were already running — start them settled, not inrushing
+    for (const lc of components) {
+      if (lc.type === 'fan' || lc.type === 'contactor_coil' || lc.type === 'relay_coil' || lc.type === 'compressor') {
+        surgeState[lc.id] = { startTime: -Infinity, prevEnergized: true };
+      }
+    }
+    solveCircuit(); startAnimation();
+  } else {
+    compResults = {}; nodeVoltages = {}; branchCurrents = {};
+    // animLoop will self-stop on next frame since simRunning is false
+  }
+
+  // View toggles
+  if (c.showData !== undefined)           { showData           = c.showData;           document.getElementById('chk-data').checked            = showData; }
+  if (c.showTitles !== undefined)         { showTitles         = c.showTitles;         document.getElementById('chk-titles').checked          = showTitles; }
+  if (c.showInfo !== undefined)           { showInfo           = c.showInfo;           document.getElementById('chk-info').checked            = showInfo; }
+  if (c.showStatus !== undefined)         { showStatus         = c.showStatus;         document.getElementById('chk-status').checked          = showStatus; }
+  if (c.showComments !== undefined)        { showComments        = c.showComments;        document.getElementById('chk-comments').checked         = showComments; }
+  if (c.showElectrons !== undefined)       { showElectrons       = c.showElectrons;       document.getElementById('chk-electrons').checked        = showElectrons; }
+  if (c.showEnergizedColors !== undefined) { showEnergizedColors = c.showEnergizedColors; document.getElementById('chk-energized-colors').checked = showEnergizedColors; }
+  if (c.showFaults !== undefined)          { showFaults          = c.showFaults;          document.getElementById('chk-faults').checked           = showFaults; }
+
+  // Tool state (meter dial, both inrush holds) — same appliers the startup
+  // restore uses. Applied before the meter block so the re-read below
+  // happens in the restored mode.
+  applySavedToolState(c);
+
+  // Multimeter
+  const meterEl = document.getElementById('multimeter');
+  if (c.meterActive) {
+    meterActive = true;
+    meterProbe1 = c.meterProbe1 || null;
+    meterProbe2 = c.meterProbe2 || null;
+    if (c.meterLeft) { meterEl.style.left = c.meterLeft; meterEl.style.right  = 'auto'; }
+    if (c.meterTop)  { meterEl.style.top  = c.meterTop;  meterEl.style.bottom = 'auto'; }
+    meterEl.classList.add('visible');
+    document.getElementById('btn-multimeter').classList.add('active');
+    const pb = document.getElementById('probe-black');
+    const pr = document.getElementById('probe-red');
+    positionProbesAtJacks();
+    if (pb) pb.classList.add('visible');
+    if (pr) pr.classList.add('visible');
+    updateTethers();
+    if (meterProbe1 && meterProbe2) takeMeasurement();
+  } else {
+    meterActive = false;
+    meterEl.classList.remove('visible');
+    document.getElementById('btn-multimeter').classList.remove('active');
+    const pb = document.getElementById('probe-black'); if (pb) pb.classList.remove('visible');
+    const pr = document.getElementById('probe-red');   if (pr) pr.classList.remove('visible');
+  }
+
+  // Clipboard
+  if (c.clipboardPages) safeSaveToStorage('ac-simulator-clipboard-pages', JSON.stringify(c.clipboardPages));
+  if (c.clipboardActive && window._restoreClipboard) {
+    // Close first if already open, then reopen at saved position
+    if (clipboardActive && window.closeClipboard) window.closeClipboard();
+    setTimeout(() => {
+      safeSaveToStorage('ac-sim-clipboard-ui', JSON.stringify({
+        active: true,
+        left: c.clipboardLeft || '', top: c.clipboardTop || '',
+        width: c.clipboardWidth || '', height: c.clipboardHeight || ''
+      }));
+      window._restoreClipboard();
+    }, 50);
+  } else if (clipboardActive && window.closeClipboard) {
+    window.closeClipboard();
+  }
+
+  // NCV Tester
+  if (ncvtActive && window.closeNCVT) window.closeNCVT();
+  if (c.ncvtActive && window._restoreNcvt) {
+    setTimeout(() => window._restoreNcvt(c), 50);
+  }
+
+  // Clamp Meter
+  if (window._clampActive && window._clampActive()) window._clampClose && window._clampClose();
+  if (c.clampActive && window._restoreClamp) {
+    setTimeout(() => window._restoreClamp(c), 50);
+  }
+
+  selectedItem = null; hidePropsPanel();
+  autoSave();
+  render();
+  setStatus(`Loaded "${label}"`);
+}
+
 function showLoadDialog() {
   const circuits = getSavedCircuits();
   const names = Object.keys(circuits);
@@ -572,7 +889,8 @@ function showLoadDialog() {
   box.innerHTML = `
     <h3 style="margin:0 0 20px;font-size:18px;color:#222;font-weight:700;">Load Project</h3>
     ${listHTML}
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:20px;">
+      <button id="load-import" title="Load a circuit file from this device" style="padding:8px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer;font-size:13px;color:#334155;font-weight:600;transition:background 0.15s;">Import from File</button>
       <button id="load-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;transition:background 0.15s;">Cancel</button>
     </div>
   `;
@@ -596,120 +914,7 @@ function showLoadDialog() {
       const name = item.dataset.name;
       const c = circuits[name];
       if (c) {
-        // Create undo point for current circuit before loading new one
-        undoStack.push(getStateSnapshot());
-        if (undoStack.length > MAX_UNDO) undoStack.shift();
-        redoStack.length = 0; // a load is a new action — nothing to redo forward into
-        // Circuit geometry
-        components.length = 0; components.push(...sanitizeComponents(c.components));
-        wires.length = 0; wires.push(...sanitizeWires(c.wires));
-        clearRenderFailures();   // a fresh circuit gets a fresh chance to draw
-        // Same reasoning as the sanitizers above — a scalar here would break the spread.
-        commentBoxes.length = 0; commentBoxes.push(...(Array.isArray(c.commentBoxes) ? c.commentBoxes : []));
-        nextId = c.nextId || 1;
-        // Per-component runtime state is keyed by id, and the incoming circuit
-        // reuses ids 1..n — without this a fan from the old circuit carries its
-        // spin, glow and surge timing straight onto an unrelated new component.
-        resetRuntimeState();
-        // A project saved on another machine — or the same one under a different
-        // OS scale factor — carries a camera framed for that viewport. Normalize
-        // it to this one where the save says what that viewport was, and frame
-        // the circuit outright where it does not.
-        if (!applySavedCamera(c, getViewportCSS())) fitCameraToViewport();
-        // A deliberate load owns the camera outright — the startup framing must
-        // not still be armed behind it and reframe to the circuit that was open
-        // when the page loaded.
-        releaseInitialFraming();
-
-        // Sim state
-        simRunning = !!c.simRunning;
-        syncSimButton(simRunning);
-        if (simRunning) {
-          // Loaded motors were already running — start them settled, not inrushing
-          for (const lc of components) {
-            if (lc.type === 'fan' || lc.type === 'contactor_coil' || lc.type === 'relay_coil' || lc.type === 'compressor') {
-              surgeState[lc.id] = { startTime: -Infinity, prevEnergized: true };
-            }
-          }
-          solveCircuit(); startAnimation();
-        } else {
-          compResults = {}; nodeVoltages = {}; branchCurrents = {};
-          // animLoop will self-stop on next frame since simRunning is false
-        }
-
-        // View toggles
-        if (c.showData !== undefined)           { showData           = c.showData;           document.getElementById('chk-data').checked            = showData; }
-        if (c.showTitles !== undefined)         { showTitles         = c.showTitles;         document.getElementById('chk-titles').checked          = showTitles; }
-        if (c.showInfo !== undefined)           { showInfo           = c.showInfo;           document.getElementById('chk-info').checked            = showInfo; }
-        if (c.showStatus !== undefined)         { showStatus         = c.showStatus;         document.getElementById('chk-status').checked          = showStatus; }
-        if (c.showComments !== undefined)        { showComments        = c.showComments;        document.getElementById('chk-comments').checked         = showComments; }
-        if (c.showElectrons !== undefined)       { showElectrons       = c.showElectrons;       document.getElementById('chk-electrons').checked        = showElectrons; }
-        if (c.showEnergizedColors !== undefined) { showEnergizedColors = c.showEnergizedColors; document.getElementById('chk-energized-colors').checked = showEnergizedColors; }
-        if (c.showFaults !== undefined)          { showFaults          = c.showFaults;          document.getElementById('chk-faults').checked           = showFaults; }
-
-        // Tool state (meter dial, both inrush holds) — same appliers the startup
-        // restore uses. Applied before the meter block so the re-read below
-        // happens in the restored mode.
-        applySavedToolState(c);
-
-        // Multimeter
-        const meterEl = document.getElementById('multimeter');
-        if (c.meterActive) {
-          meterActive = true;
-          meterProbe1 = c.meterProbe1 || null;
-          meterProbe2 = c.meterProbe2 || null;
-          if (c.meterLeft) { meterEl.style.left = c.meterLeft; meterEl.style.right  = 'auto'; }
-          if (c.meterTop)  { meterEl.style.top  = c.meterTop;  meterEl.style.bottom = 'auto'; }
-          meterEl.classList.add('visible');
-          document.getElementById('btn-multimeter').classList.add('active');
-          const pb = document.getElementById('probe-black');
-          const pr = document.getElementById('probe-red');
-          positionProbesAtJacks();
-          if (pb) pb.classList.add('visible');
-          if (pr) pr.classList.add('visible');
-          updateTethers();
-          if (meterProbe1 && meterProbe2) takeMeasurement();
-        } else {
-          meterActive = false;
-          meterEl.classList.remove('visible');
-          document.getElementById('btn-multimeter').classList.remove('active');
-          const pb = document.getElementById('probe-black'); if (pb) pb.classList.remove('visible');
-          const pr = document.getElementById('probe-red');   if (pr) pr.classList.remove('visible');
-        }
-
-        // Clipboard
-        if (c.clipboardPages) safeSaveToStorage('ac-simulator-clipboard-pages', JSON.stringify(c.clipboardPages));
-        if (c.clipboardActive && window._restoreClipboard) {
-          // Close first if already open, then reopen at saved position
-          if (clipboardActive && window.closeClipboard) window.closeClipboard();
-          setTimeout(() => {
-            safeSaveToStorage('ac-sim-clipboard-ui', JSON.stringify({
-              active: true,
-              left: c.clipboardLeft || '', top: c.clipboardTop || '',
-              width: c.clipboardWidth || '', height: c.clipboardHeight || ''
-            }));
-            window._restoreClipboard();
-          }, 50);
-        } else if (clipboardActive && window.closeClipboard) {
-          window.closeClipboard();
-        }
-
-        // NCV Tester
-        if (ncvtActive && window.closeNCVT) window.closeNCVT();
-        if (c.ncvtActive && window._restoreNcvt) {
-          setTimeout(() => window._restoreNcvt(c), 50);
-        }
-
-        // Clamp Meter
-        if (window._clampActive && window._clampActive()) window._clampClose && window._clampClose();
-        if (c.clampActive && window._restoreClamp) {
-          setTimeout(() => window._restoreClamp(c), 50);
-        }
-
-        selectedItem = null; hidePropsPanel();
-        autoSave();
-        render();
-        setStatus(`Loaded "${name}"`);
+        applyLoadedCircuit(c, name);
       }
       document.body.removeChild(overlay);
     });
@@ -726,6 +931,18 @@ function showLoadDialog() {
         document.body.removeChild(overlay);
         showLoadDialog(); // refresh
       }
+    });
+  });
+
+  // Import lands the file in the library, then reopens the dialog so the newly
+  // imported project is visible and one click from loading.
+  const importBtn = box.querySelector('#load-import');
+  importBtn.addEventListener('mouseenter', () => { importBtn.style.background = '#e2e8f0'; });
+  importBtn.addEventListener('mouseleave', () => { importBtn.style.background = '#f8fafc'; });
+  importBtn.addEventListener('click', () => {
+    importProjectFile(() => {
+      if (overlay.parentNode) document.body.removeChild(overlay);
+      showLoadDialog();
     });
   });
 

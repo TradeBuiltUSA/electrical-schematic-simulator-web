@@ -14,7 +14,7 @@ function _drawTetheredBox(comp, anchorX, anchorY, linesArr, compId, boxKey, offs
   if (!comp[offsetProp]) comp[offsetProp] = { x: 0, y: 0 };
   const bx = defX + comp[offsetProp].x, by = defY + comp[offsetProp].y;
   const bcx = bx + bW / 2, bcy = by + bH / 2;
-  ctx.strokeStyle = 'rgba(42,122,204,0.3)'; ctx.lineWidth = 1.5 / camZoom;
+  ctx.strokeStyle = 'rgba(42,122,204,0.45)'; ctx.lineWidth = 1.5 / camZoom;
   ctx.setLineDash([4 / camZoom, 4 / camZoom]);
   ctx.beginPath(); ctx.moveTo(anchorX, anchorY); ctx.lineTo(bcx, bcy); ctx.stroke(); ctx.setLineDash([]);
   const tr = 8 / camZoom;
@@ -207,7 +207,7 @@ function drawOneComponent(c, alpha) {
       const boxCenterX = bx + boxW / 2, boxCenterY = by + boxH / 2;
 
       // Tether line
-      ctx.strokeStyle = 'rgba(42,122,204,0.3)';
+      ctx.strokeStyle = 'rgba(42,122,204,0.45)';
       ctx.lineWidth = 1.5 / camZoom;
       ctx.setLineDash([4/camZoom, 4/camZoom]);
       ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(boxCenterX, boxCenterY); ctx.stroke();
@@ -366,7 +366,7 @@ function drawOneComponent(c, alpha) {
       if (!c.dataBoxOffset) c.dataBoxOffset = { x: 0, y: 0 };
       const bx = defX + c.dataBoxOffset.x, by = defY + c.dataBoxOffset.y;
       const boxCenterX = bx + boxW/2, boxCenterY = by + boxH/2;
-      ctx.strokeStyle = 'rgba(42,122,204,0.3)'; ctx.lineWidth = 1.5/camZoom;
+      ctx.strokeStyle = 'rgba(42,122,204,0.45)'; ctx.lineWidth = 1.5/camZoom;
       ctx.setLineDash([4/camZoom,4/camZoom]); ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(boxCenterX,boxCenterY); ctx.stroke(); ctx.setLineDash([]);
       const tr = 8/camZoom;
       ctx.save(); ctx.shadowColor='rgba(0,0,0,0.15)'; ctx.shadowBlur=12/camZoom; ctx.shadowOffsetY=3/camZoom;
@@ -1042,7 +1042,7 @@ function drawOneComponent(c, alpha) {
     // Tether line
     const boxCenterX = bx + boxW / 2, boxCenterY = by + boxH / 2;
     ctx.save();
-    ctx.strokeStyle = 'rgba(42,122,204,0.2)';
+    ctx.strokeStyle = 'rgba(42,122,204,0.3)';
     ctx.lineWidth = 1 / camZoom;
     ctx.setLineDash([3 / camZoom, 3 / camZoom]);
     ctx.beginPath();

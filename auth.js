@@ -332,9 +332,9 @@
        scolding, and every password is invalid on its way to being valid.
 
      • The rules reach a screen reader through aria-describedby, not through a
-       live region. Three rules re-announced on every keystroke is unusable
-       noise; instead they are read once when the field takes focus, and a
-       single polite line reports the one transition that matters. */
+       live region. The whole checklist re-announced on every keystroke is
+       unusable noise; instead it is read once when the field takes focus,
+       and a single polite line reports the one transition that matters. */
   function passwordChecklist(f) {
     const listId = 'tb-req-' + (++fieldSeq);
 

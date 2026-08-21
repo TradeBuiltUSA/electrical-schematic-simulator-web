@@ -950,24 +950,43 @@ function onMouseUp(e) {
   }
 }
 
+// A mouse notch and a trackpad swipe cannot be told apart by delta size alone.
+// macOS delivers a slow wheel notch as a handful of pixels — the same magnitude a
+// two-finger swipe reports — a high-resolution wheel adds fractional deltas, and
+// Firefox reports lines instead of pixels. Cadence is the reliable signal: a wheel
+// notch arrives on its own, a swipe arrives as a stream. So an isolated event gets
+// a fixed step that is always visible no matter how small its delta, and a stream
+// gets a continuous factor that tracks the fingers.
+let _lastWheelAt = -Infinity;
+const WHEEL_STREAM_GAP_MS = 120;
+const WHEEL_LINE_PX = 16;
+
 function onWheel(e) {
   e.preventDefault();
+  const now = performance.now();
+  const isolated = now - _lastWheelAt > WHEEL_STREAM_GAP_MS;
+  _lastWheelAt = now;
+
+  // deltaMode is not always pixels — normalize lines and pages before using it.
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= WHEEL_LINE_PX;
+  else if (e.deltaMode === 2) dy *= canvas.clientHeight || 800;
+  if (!Number.isFinite(dy) || dy === 0) return;
+
+  // Every wheel gesture zooms about the pointer — mouse notch, trackpad pinch
+  // (which arrives as ctrlKey+wheel) and trackpad two-finger scroll alike.
+  // Panning stays on right-click/middle/Alt drag, and on two-finger touch drag.
+  const pinch = e.ctrlKey || e.metaKey;
+  const discreteNotch = isolated && !pinch && e.deltaX === 0;
+  // exp() keeps the continuous factor symmetric and positive at any delta, so a
+  // violent flick can never invert the zoom; the clamp keeps one momentum spike
+  // (macOS inertia reports deltas in the hundreds) from teleporting to the limit.
+  const zoomFactor = discreteNotch
+    ? (dy < 0 ? 1.1 : 0.9)
+    : Math.max(0.8, Math.min(1.25, Math.exp(-dy * 0.005)));
+
   const { sx, sy } = canvasMousePos(e);
   const worldBefore = screenToWorld(sx, sy);
-  // Every wheel gesture zooms about the pointer — a mouse notch, a trackpad
-  // pinch (which arrives as ctrlKey+wheel), and a trackpad two-finger scroll
-  // alike. Panning stays on right-click/middle/Alt drag, and on two-finger
-  // drag on touch.
-  //
-  // Trackpad gestures report small or fractional deltas (and often a deltaX),
-  // so they get a continuous factor that tracks the finger; a real wheel notch
-  // is a whole-number jump (many mice report ~40, some 120) and gets a fixed
-  // step. The factor is clamped so one violent flick can't invert the zoom.
-  const fineGrained = e.ctrlKey || e.metaKey || e.deltaX !== 0 ||
-    !Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 15;
-  const zoomFactor = fineGrained
-    ? Math.max(0.5, Math.min(2, 1 - e.deltaY * 0.005))
-    : (e.deltaY < 0 ? 1.1 : 0.9);
   camZoom = Math.max(0.1, Math.min(5, camZoom * zoomFactor));
   const worldAfter = screenToWorld(sx, sy);
   camX += (worldAfter.x - worldBefore.x) * camZoom;

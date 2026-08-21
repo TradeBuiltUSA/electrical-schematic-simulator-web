@@ -616,7 +616,6 @@ function showSaveDialog() {
             <div style="font-size:10px;color:#aaa;margin-top:1px;">${escapeHTML(date)}</div>
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;">
-            <button class="save-export-btn" data-name="${nAttr}" title="Export this project to a file" style="padding:5px 10px;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;color:#334155;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.15s;">Export</button>
             <button class="save-overwrite-btn" data-name="${nAttr}" title="Overwrite with current circuit" style="padding:5px 10px;border:1px solid #e0a800;border-radius:5px;background:#fff8e1;color:#b45309;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.15s;">Overwrite</button>
             <button class="save-delete-btn" data-name="${nAttr}" title="Delete this save" style="padding:5px 8px;border:1px solid #e0e0e0;border-radius:5px;background:#fff;color:#cc0000;cursor:pointer;font-size:13px;font-weight:600;transition:background 0.15s;">&#x2715;</button>
           </div>
@@ -633,8 +632,7 @@ function showSaveDialog() {
     </div>
     <div id="save-name-warning" style="font-size:11px;color:#b45309;margin-top:6px;display:none;"></div>
     ${listHTML}
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:8px;">
-      <button id="save-export-current" title="Download the circuit currently on the canvas as a file" style="padding:8px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer;font-size:13px;color:#334155;font-weight:600;transition:background 0.15s;">Export Current to File</button>
+    <div style="display:flex;justify-content:flex-end;margin-top:20px;">
       <button id="save-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;transition:background 0.15s;">Cancel</button>
     </div>
   `;
@@ -674,27 +672,6 @@ function showSaveDialog() {
   box.querySelectorAll('.save-delete-btn').forEach(btn => {
     btn.addEventListener('mouseenter', () => { btn.style.background = '#fef2f2'; });
     btn.addEventListener('mouseleave', () => { btn.style.background = '#fff'; });
-  });
-
-  // Export a stored project straight to a file
-  box.querySelectorAll('.save-export-btn').forEach(btn => {
-    btn.addEventListener('mouseenter', () => { btn.style.background = '#e2e8f0'; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = '#f8fafc'; });
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const name = btn.dataset.name;
-      const stored = getSavedCircuits()[name];
-      if (stored) exportProjectFile(stored, name);
-    });
-  });
-
-  // Export what is on the canvas right now, without needing to save it first
-  const exportCurrentBtn = box.querySelector('#save-export-current');
-  exportCurrentBtn.addEventListener('mouseenter', () => { exportCurrentBtn.style.background = '#e2e8f0'; });
-  exportCurrentBtn.addEventListener('mouseleave', () => { exportCurrentBtn.style.background = '#f8fafc'; });
-  exportCurrentBtn.addEventListener('click', () => {
-    const typed = inp.value.trim();
-    exportProjectFile(buildSaveData(), typed || 'Untitled Circuit');
   });
 
   // Overwrite button on each row
@@ -927,8 +904,7 @@ function showLoadDialog() {
   box.innerHTML = `
     <h3 style="margin:0 0 20px;font-size:18px;color:#222;font-weight:700;">Load Project</h3>
     ${listHTML}
-    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:20px;">
-      <button id="load-import" title="Load a circuit file from this device" style="padding:8px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer;font-size:13px;color:#334155;font-weight:600;transition:background 0.15s;">Import from File</button>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
       <button id="load-cancel" style="padding:8px 20px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#555;transition:background 0.15s;">Cancel</button>
     </div>
   `;
@@ -969,18 +945,6 @@ function showLoadDialog() {
         document.body.removeChild(overlay);
         showLoadDialog(); // refresh
       }
-    });
-  });
-
-  // Import lands the file in the library, then reopens the dialog so the newly
-  // imported project is visible and one click from loading.
-  const importBtn = box.querySelector('#load-import');
-  importBtn.addEventListener('mouseenter', () => { importBtn.style.background = '#e2e8f0'; });
-  importBtn.addEventListener('mouseleave', () => { importBtn.style.background = '#f8fafc'; });
-  importBtn.addEventListener('click', () => {
-    importProjectFile(() => {
-      if (overlay.parentNode) document.body.removeChild(overlay);
-      showLoadDialog();
     });
   });
 

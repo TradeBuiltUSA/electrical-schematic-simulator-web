@@ -227,7 +227,19 @@ function resizeCanvas() {
   invalidateCanvasRect();
   render();
 }
+// Both viewport watchers — this listener and the ResizeObserver further down —
+// are registered while index.html is still parsing, so either can fire before the
+// scripts render() draws through (wires.js, components.js, symbols.js, …) have
+// loaded. A ResizeObserver delivers its first observation at the next rendering
+// opportunity, and the browser is free to take one between two <script> tags; the
+// resulting resizeCanvas() then reached render() and threw on drawWires, which was
+// simply not defined yet. Neither watcher has anything to do that early: their job
+// is to re-cut a canvas the app has already sized, and engine.js sizes it during
+// init regardless of what they skipped. `_lastViewCSS` is the record of that first
+// sizing, so a null one means the app has not framed the canvas yet.
+function canvasIsFramed() { return _lastViewCSS !== null; }
 window.addEventListener('resize', () => {
+  if (!canvasIsFramed()) return;
   invalidateCanvasRect();
   resizeCanvas();
 });
@@ -261,6 +273,7 @@ if (window.ResizeObserver) {
   const wrapEl = document.getElementById('canvas-wrap');
   if (wrapEl) {
     new ResizeObserver(() => {
+      if (!canvasIsFramed()) return;   // still parsing; see canvasIsFramed above
       const view = getViewportCSS();
       const dpr  = window.devicePixelRatio || 1;
       // Nothing actually moved. Re-cutting the buffer to the numbers it already

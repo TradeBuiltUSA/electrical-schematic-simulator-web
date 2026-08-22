@@ -258,6 +258,34 @@ function getVoltageAt(gx, gy) {
   return 0; // unsolved node — no source driving it, so reference potential (0V)
 }
 
+// The COMPLEX voltage at a point, when the solver has one. `nodeVoltages` carries
+// only a magnitude, and subtracting magnitudes is meaningless the moment phases
+// differ: two legs of a 480Y/277 system are both 277 V, and |277 − 277| is zero,
+// while the voltage between them is 480 V. A meter has to subtract phasors.
+//
+// Returns null on a DC island or an unsolved node, where the scalar value in
+// `nodeVoltages` is already the signed truth and no phasor exists.
+function getPhasorAt(gx, gy) {
+  const ph = window._nodePhasors;
+  if (!ph) return null;
+  const k = gx + ',' + gy;
+  if (ph[k] !== undefined) return ph[k];
+  for (const w of wires) {
+    const dx = w.gx2 - w.gx1, dy = w.gy2 - w.gy1;
+    const lenSq = dx*dx + dy*dy;
+    if (lenSq === 0) continue;
+    const t = ((gx - w.gx1)*dx + (gy - w.gy1)*dy) / lenSq;
+    if (t < -0.01 || t > 1.01) continue;
+    if (Math.hypot((w.gx1 + t*dx) - gx, (w.gy1 + t*dy) - gy) < 0.1) {
+      const p1 = ph[w.gx1 + ',' + w.gy1];
+      const p2 = ph[w.gx2 + ',' + w.gy2];
+      if (p1 !== undefined) return p1;
+      if (p2 !== undefined) return p2;
+    }
+  }
+  return null;
+}
+
 // Returns true if component is a switching type (switch, contactor, fuse, breaker)
 function isSwitchType(c) {
   return ['switch','time_delay','contactor_contact','fuse','lv_fuse','td_fuse','breaker'].includes(c.type);
@@ -265,8 +293,15 @@ function isSwitchType(c) {
 
 // Returns true if the switching component is currently conducting (closed/intact)
 function isConducting(c) {
-  if (c.type === 'switch' || c.type === 'time_delay') return !!c.props.closed;
-  if (c.type === 'contactor_contact') return !!c.props.contactClosed;
+  // Contact faults override the commanded position — a welded contact ohms out
+  // closed with its coil de-energized, and a stuck one reads open with the coil
+  // pulled in. The meter has to show the reality, not the command, or the fault is
+  // undiagnosable with the tool provided to diagnose it.
+  if (isSwitchingType(c.type)) {
+    const commanded = (c.type === 'switch' || c.type === 'time_delay')
+      ? !!c.props.closed : !!c.props.contactClosed;
+    return contactConducts(c, commanded);
+  }
   if (c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') return !c.props.blown;
   if (c.type === 'breaker') return !c.props.tripped;
   return true;
@@ -309,83 +344,20 @@ function takeMeasurement() {
   }
 
   if (meterMode === 'vac' || meterMode === 'vdc') {
-    // 3-phase / multi-leg source: probes on two different phase nets → return line-to-line voltage
-    // (nodeVoltages can't represent 3-phase correctly without phasor math)
-    // BFS through wires to find which source terminal index a probe is connected to
-    if (meterMode === 'vac') {
-      function probePhaseIndex(px, py, terms) {
-        const visited = new Set();
-        const queue = [px + ',' + py];
-        visited.add(px + ',' + py);
-        while (queue.length > 0) {
-          const k = queue.shift();
-          const [cx, cy] = k.split(',').map(Number);
-          for (let i = 0; i < terms.length; i++) {
-            if (terms[i][0] === cx && terms[i][1] === cy) return i;
-          }
-          for (const w of wires) {
-            if (w.gx1 === cx && w.gy1 === cy) {
-              const nk = w.gx2 + ',' + w.gy2;
-              if (!visited.has(nk)) { visited.add(nk); queue.push(nk); }
-            }
-            if (w.gx2 === cx && w.gy2 === cy) {
-              const nk = w.gx1 + ',' + w.gy1;
-              if (!visited.has(nk)) { visited.add(nk); queue.push(nk); }
-            }
-          }
-        }
-        return -1;
-      }
-      const p1x = meterProbe1.gx, p1y = meterProbe1.gy;
-      const p2x = meterProbe2.gx, p2y = meterProbe2.gy;
-      for (const c of components) {
-        if (c.type === 'ac_480' && c.gx3 !== undefined && c.props.on !== false) {
-          const terms = [[c.gx1,c.gy1],[c.gx2,c.gy2],[c.gx3,c.gy3]];
-          const p1on = probePhaseIndex(p1x, p1y, terms);
-          const p2on = probePhaseIndex(p2x, p2y, terms);
-          if (p1on !== -1 && p2on !== -1 && p1on !== p2on) {
-            const v = c.props.voltage || 480;
-            meterTargetValue = v; meterDisplayUnit = ' V~'; meterDisplayMode = 'value';
-            setMeterStatus('Voltage: ' + v.toFixed(1) + 'V AC (line-to-line)');
-            return;
-          }
-        }
-        // 480Y/277V wye source: L1-L2/L2-L3/L1-L3 = 480V, L1-N/L2-N/L3-N = 277V
-        if (c.type === 'ac_480_wye' && c.gx4 !== undefined && c.props.on !== false) {
-          const phaseTerms = [[c.gx1,c.gy1],[c.gx2,c.gy2],[c.gx3,c.gy3]]; // L1, L2, L3
-          const allTerms = [...phaseTerms, [c.gx4, c.gy4]]; // include N as index 3
-          const p1on = probePhaseIndex(p1x, p1y, allTerms);
-          const p2on = probePhaseIndex(p2x, p2y, allTerms);
-          if (p1on !== -1 && p2on !== -1 && p1on !== p2on) {
-            const p1isPhase = p1on < 3, p2isPhase = p2on < 3;
-            if (p1isPhase && p2isPhase) {
-              // Two different phase legs → 480V line-to-line
-              meterTargetValue = 480; meterDisplayUnit = ' V~'; meterDisplayMode = 'value';
-              setMeterStatus('Voltage: 480.0V AC (line-to-line)');
-              return;
-            }
-            if ((p1isPhase && !p2isPhase) || (!p1isPhase && p2isPhase)) {
-              // Phase to neutral → 277V line-to-neutral
-              meterTargetValue = 277; meterDisplayUnit = ' V~'; meterDisplayMode = 'value';
-              setMeterStatus('Voltage: 277.0V AC (line-to-neutral)');
-              return;
-            }
-          }
-        }
-        // 240V split-phase: probes on L1 and L2 → return full line-to-line voltage
-        if (c.type === 'ac_240' && c.props.on !== false) {
-          const terms = [[c.gx1,c.gy1],[c.gx2,c.gy2]];
-          const p1on = probePhaseIndex(p1x, p1y, terms);
-          const p2on = probePhaseIndex(p2x, p2y, terms);
-          if (p1on !== -1 && p2on !== -1 && p1on !== p2on) {
-            const v = c.props.voltage || 240;
-            meterTargetValue = v; meterDisplayUnit = ' V~'; meterDisplayMode = 'value';
-            setMeterStatus('Voltage: ' + v.toFixed(1) + 'V AC (line-to-line)');
-            return;
-          }
-        }
-      }
-    }
+    // NOTE: a hard-coded three-phase path used to sit here, returning the literal
+    // nameplate 480 V or 277 V whenever the probes landed on two different phase
+    // nets. Its own comment explained why — "nodeVoltages can't represent 3-phase
+    // correctly without phasor math" — and that is no longer true.
+    //
+    // It has been removed rather than kept as a fast path, because a constant is
+    // not a measurement. It reported 480 V during a phase loss, during unbalance,
+    // and after protection had opened a conductor; it hid supply sag entirely; and
+    // it made the meter agree with the nameplate instead of with the circuit.
+    // Independent hand-calculated benchmarks caught it: the solved line-to-line
+    // voltage under load is 479.77 V, and the meter was insisting on 480.00 V.
+    //
+    // The meter now reads solved state only, subtracting node PHASORS (see
+    // getPhasorAt) so that two legs at 277 V correctly show 480 V between them.
 
     const v1raw = getVoltageAt(meterProbe1.gx, meterProbe1.gy);
     const v2raw = getVoltageAt(meterProbe2.gx, meterProbe2.gy);
@@ -407,7 +379,12 @@ function takeMeasurement() {
         setMeterStatus('0.0V — AC mode on DC circuit reads 0');
         return;
       }
-      const r = Math.abs(v1 - v2);
+      // Subtract the PHASORS. This is what makes a meter read 480 V between two
+      // legs that are each 277 V to neutral — the single most important reading on
+      // a three-phase system, and one a magnitude subtraction gets exactly wrong.
+      const p1 = getPhasorAt(meterProbe1.gx, meterProbe1.gy);
+      const p2 = getPhasorAt(meterProbe2.gx, meterProbe2.gy);
+      const r = (p1 && p2) ? Cx.abs(Cx.sub(p1, p2)) : Math.abs(v1 - v2);
       meterTargetValue = r; meterDisplayUnit = ' V~'; meterDisplayMode = 'value';
       setMeterStatus('Voltage: ' + r.toFixed(1) + 'V AC');
     } else {
@@ -462,18 +439,26 @@ function takeMeasurement() {
     const probedResult = findProbedComponent();
     const probedComp = probedResult ? probedResult.comp : null;
     if (probedComp && probedComp.type === 'capacitor') {
-      if (probedComp.props.faultMode === 'short') {
+      const capFault = probedComp.props.faultMode;
+      if (capFault === 'short') {
         meterDisplayMode = 'text';
         updateMeterDisplay('0.00', ' \u00B5F');
         setMeterStatus('0.00\u00B5F \u2014 Cap is SHORTED');
-      } else if (probedComp.props.faultMode === 'open') {
+      } else if (capFault === 'open') {
         meterDisplayMode = 'text';
         updateMeterDisplay('O.L.', ' \u00B5F');
         setMeterStatus('O.L. \u2014 Cap is OPEN (failed)');
       } else {
-        const uF = probedComp.props.capacitance || 0;
+        // The value the circuit is actually using, from the same helper the solver
+        // reads. A weak capacitor cannot measure healthy here while behaving weak
+        // in the circuit — that consistency is the exercise.
+        const uF = effectiveCapacitance(probedComp);
+        const rated = probedComp.props.capacitance || 0;
         meterTargetValue = uF; meterDisplayUnit = ' \u00B5F'; meterDisplayMode = 'value';
-        setMeterStatus('Capacitance: ' + uF.toFixed(2) + '\u00B5F');
+        const pct = rated > 0 ? (uF / rated * 100).toFixed(0) : '0';
+        setMeterStatus(capFault === 'none'
+          ? 'Capacitance: ' + uF.toFixed(2) + '\u00B5F'
+          : 'Capacitance: ' + uF.toFixed(2) + '\u00B5F \u2014 ' + pct + '% of the ' + rated + '\u00B5F nameplate');
       }
     } else {
       meterDisplayMode = 'text';
@@ -492,13 +477,32 @@ function takeMeasurement() {
     // (nodal analysis can find a path through other circuit components and return a misleading value)
     const probedSwitch = findProbedComponent();
     if (probedSwitch && isSwitchType(probedSwitch.comp)) {
-      if (isConducting(probedSwitch.comp)) {
+      const sc = probedSwitch.comp;
+      const sFault = sc.props && sc.props.faultMode;
+      // A set of burned contacts reads a real, low-but-not-zero resistance. That
+      // reading is the whole point: it is what separates "dirty contacts" from
+      // "good contacts" when both look closed and both pass some current.
+      if (sFault === 'high-resistance' && isConducting(sc)) {
+        const r = contactSeriesR(sc);
+        meterTargetValue = r; meterDisplayUnit = ' \u03A9'; meterDisplayMode = 'value';
+        setMeterStatus(r.toFixed(1) + '\u03A9 \u2014 closed, but the contacts are resistive');
+        return;
+      }
+      if (isConducting(sc)) {
+        // 0.0 \u03A9 is a measured value, not a fixed label like "O.L." \u2014 say so, or the
+        // display mode is left holding whatever the previous reading set and the
+        // number animates against the wrong track.
+        meterTargetValue = 0; meterDisplayUnit = ' \u03A9'; meterDisplayMode = 'value';
         updateMeterDisplay('0.0', ' \u03A9');
-        setMeterStatus('0.0\u03A9 \u2014 Closed (continuity)');
+        setMeterStatus(sFault === 'welded'
+          ? '0.0\u03A9 \u2014 Closed (welded \u2014 will not open)'
+          : '0.0\u03A9 \u2014 Closed (continuity)');
       } else {
         meterDisplayMode = 'text';
         updateMeterDisplay('O.L.', ' \u03A9');
-        setMeterStatus('O.L. \u2014 Open (no continuity)');
+        setMeterStatus(sFault === 'stuck-open'
+          ? 'O.L. \u2014 Open (stuck \u2014 will not close)'
+          : 'O.L. \u2014 Open (no continuity)');
       }
       return;
     }
@@ -519,6 +523,11 @@ function takeMeasurement() {
       const runR   = cmp.props.runResistance   || 0;
       const startR = cmp.props.startResistance || 0;
       let reading = null, note = '';
+      // A locked rotor, a failed start circuit and a failed cutout are all
+      // MECHANICAL or EXTERNAL failures — the windings themselves are intact, so
+      // every ohm reading is normal. That is precisely the diagnostic lesson: a
+      // compressor that hums and will not start, but ohms out perfectly, is not a
+      // winding problem. Only the winding faults move these numbers.
       if (across(onC, onR)) {
         if (fm === 'open-run')       { reading = 'OL'; note = 'Run winding OPEN'; }
         else if (fm === 'short-run') { reading = 0;    note = 'Run winding SHORTED'; }
@@ -526,6 +535,7 @@ function takeMeasurement() {
       } else if (across(onC, onS)) {
         if (fm === 'open-start')       { reading = 'OL'; note = 'Start winding OPEN'; }
         else if (fm === 'short-start') { reading = 0;    note = 'Start winding SHORTED'; }
+        else if (fm === 'open-start-circuit') { reading = startR; note = 'winding reads good \u2014 the fault is in the start circuit'; }
         else reading = startR;
       } else if (across(onR, onS)) {
         // R → C → S: the two windings measured in series
@@ -563,12 +573,22 @@ function takeMeasurement() {
         setMeterStatus('O.L. \u2014 Open circuit fault');
         return;
       }
-      const r = (comp.type === 'contactor_coil' || comp.type === 'relay_coil')
-        ? (comp.props.coilResistance || 0)
-        : ((comp.props && comp.props.resistance) || 0);
+      const isCoil = comp.type === 'contactor_coil' || comp.type === 'relay_coil';
+      const nominal = isCoil ? (comp.props.coilResistance || 0)
+                             : ((comp.props && comp.props.resistance) || 0);
+      // Shorted turns: the coil still reads, but far below its nameplate. A reading
+      // of zero would suggest a dead short across the terminals, which is not what
+      // a coil with shorted turns actually does.
+      const r = isCoil && fm === 'short'
+        ? nominal * FAULT_MODEL.COIL_SHORT_FRACTION
+        : loadResistanceFor(comp, nominal);
       if (r > 0) {
         meterTargetValue = r; meterDisplayUnit = ' \u03A9'; meterDisplayMode = 'value';
-        setMeterStatus('Resistance: ' + r.toFixed(1) + '\u03A9');
+        setMeterStatus(fm === 'high-resistance'
+          ? 'Resistance: ' + r.toFixed(1) + '\u03A9 \u2014 high for a ' + nominal.toFixed(1) + '\u03A9 part'
+          : (isCoil && fm === 'short'
+              ? 'Resistance: ' + r.toFixed(1) + '\u03A9 \u2014 shorted turns (nameplate ' + nominal.toFixed(0) + '\u03A9)'
+              : 'Resistance: ' + r.toFixed(1) + '\u03A9'));
         return;
       }
     }

@@ -871,10 +871,18 @@ function drawOneComponent(c, alpha) {
     // ── Fault indicator text ──
     const fm = c.props && c.props.faultMode;
     if (showFaults && fm && fm !== 'none') {
-      const faultLabel = fm === 'short' ? '(Short Circuit)' : '(Open Circuit)';
+      // Wording comes from the registry, so a mode added there is labelled here
+      // without a second table to keep in step. Amber for a fault that still
+      // conducts, red for one that has broken the circuit.
+      const conducts = fm === 'short' || fm === 'welded' || fm === 'high-resistance' ||
+                       fm === 'weak' || fm === 'out-of-tolerance' || fm === 'locked-rotor' ||
+                       fm === 'ground-fault' || fm === 'cutout-failure' ||
+                       fm === 'short-run' || fm === 'short-start' ||
+                       fm === 'short-primary' || fm === 'short-secondary';
+      const faultLabel = '(' + FAULT_LABELS[fm] + ')';
       ctx.save();
       ctx.font = `bold ${10 / camZoom}px Segoe UI, sans-serif`;
-      ctx.fillStyle = fm === 'short' ? '#e67e00' : '#cc0000';
+      ctx.fillStyle = conducts ? '#e67e00' : '#cc0000';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
       ctx.fillText(faultLabel, mx, my + labelOff + specFS + 16 / camZoom);
@@ -895,10 +903,14 @@ function drawOneComponent(c, alpha) {
     if (isACSource(c.type) || c.type === 'dc_source') {
       const srcLabel = c.type === 'dc_source' ? 'DC' : (c.type === 'ac_480' ? '\u0394 3\u03c6' : '1\u03c6');
       if (cr.shortCircuit) {
+        // Fault current is finite and set by the source's own impedance — see the
+        // Thevenin model in protection.js. It used to read "unlimited", which made
+        // every fault look identical and every trip threshold meaningless.
         lines.push({ text: `SHORT CIRCUIT!`, color: '#cc0000', st: true });
         lines.push({ text: `${dv.v.toFixed(1)} V`, color: '#cc0000' });
         lines.push({ text: srcLabel, color: '#cc0000' });
-        lines.push({ text: `\u221E A (unlimited)`, color: '#cc0000' });
+        lines.push({ text: `${fmtNum(cr.current, 0)} A fault`, color: '#cc0000' });
+        if (isFinite(cr.availableFault)) lines.push({ text: `${cr.availableFault} A available`, color: '#cc0000' });
       } else {
         if (c.props.on === false) {
           lines.push({ text: 'OFF', color: '#888', st: true });

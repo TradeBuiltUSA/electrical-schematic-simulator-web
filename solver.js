@@ -285,48 +285,105 @@ function releaseAllCoils() {
 //  CIRCUIT SOLVER
 // ═══════════════════════════════════════════════════════════════
 
-// Gaussian elimination with partial pivoting
-function solveLinear(A, b, n) {
-  // Create augmented matrix
-  const M = [];
-  for (let i = 0; i < n; i++) {
-    M[i] = new Float64Array(n + 1);
-    for (let j = 0; j < n; j++) M[i][j] = A[i][j];
-    M[i][n] = b[i];
-  }
-  // Forward elimination
-  for (let col = 0; col < n; col++) {
-    // Partial pivoting
-    let maxRow = col, maxVal = Math.abs(M[col][col]);
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(M[row][col]) > maxVal) { maxVal = Math.abs(M[row][col]); maxRow = row; }
-    }
-    if (maxVal < 1e-12) return null; // singular
-    if (maxRow !== col) { const tmp = M[col]; M[col] = M[maxRow]; M[maxRow] = tmp; }
-    // Eliminate below
-    for (let row = col + 1; row < n; row++) {
-      const factor = M[row][col] / M[col][col];
-      for (let j = col; j <= n; j++) M[row][j] -= factor * M[col][j];
-    }
-  }
-  // Back substitution
-  const x = new Float64Array(n);
-  for (let i = n - 1; i >= 0; i--) {
-    x[i] = M[i][n];
-    for (let j = i + 1; j < n; j++) x[i] -= M[i][j] * x[j];
-    x[i] /= M[i][i];
-  }
-  return x;
-}
+// NOTE: the real-valued Gaussian elimination that used to live here is gone. It
+// was generalized into solveComplexLinear() in phasor.js rather than kept
+// alongside it, so the engine has exactly one linear solver and one set of
+// numerical guards — partial pivoting, singular detection, finite checks.
 
 let _solveDepth = 0;
 let _solveStateHistory = []; // Track contactor states to detect oscillations
+// Per-solve register of the current flowing through each protective device, and
+// which motors are still inside their legitimate inrush window. Written by
+// solveElectricalPass(), read by the protection layer between passes. It lives
+// out here rather than on `props` because it is measurement, not state.
+let _deviceCurrents = new Map();   // protective-device id → amps
+let _startingMotors = new Set();   // motor ids whose surge has not yet decayed
+
 /**
- * Solve the circuit currently on the canvas.
+ * Solve the circuit currently on the canvas, then let protection act on the
+ * result — the full cycle, and the function every caller should use.
  *
- * Takes no arguments and returns nothing: it reads the shared state
- * (`components`, `wires`, and each component's `props`) and writes its answers
- * back into the shared result maps, which the renderer and the meters then read.
+ *     solveElectricalPass()   nodal analysis; contactors and relays settle
+ *   → classify               solved state → FaultEvent[]  (protection.js)
+ *   → evaluate protection    advance accumulators, open at most one device
+ *   → re-solve if a device opened, otherwise settle
+ *
+ * TERMINATION IS STRUCTURAL, not a counter. Within one call a protective device
+ * may only go closed → open, never the reverse, so every extra pass strictly
+ * shrinks the set of closed devices and the loop cannot outlast them. The
+ * iteration cap below is a backstop against a modelling mistake, and reaching it
+ * is reported rather than swallowed.
+ *
+ * Protection timing advances on `animTime` and is computed once per call, so the
+ * re-solve passes inside one frame consume no simulated time — a device cannot
+ * trip twice on the same slice of the clock, and a test that drives `animTime`
+ * by hand gets exactly reproducible results at any frame rate.
+ */
+function solveCircuit() {
+  if (_solveDepth > 0) { solveElectricalPass(); return; } // nested settle — no protection
+
+  TBProtection.beginFrame(animTime, simRunning);
+  if (!simRunning) TBProtection.freezeClock();
+
+  const deviceCount = components.reduce((n, c) => n + (isProtectiveDevice(c) ? 1 : 0), 0);
+  const maxPasses = deviceCount + 2;
+
+  let pass = 0, settled = false;
+  for (; pass < maxPasses; pass++) {
+    _deviceCurrents = new Map();
+    _startingMotors = new Set();
+    solveElectricalPass();
+    classifyComponents();
+
+    if (!simRunning) { settled = true; break; }
+
+    // Classify what the solved circuit is doing before anything acts on it.
+    for (const [id, amps] of _deviceCurrents) {
+      const c = components.find(x => x.id === id);
+      if (!c || deviceIsOpen(c)) continue;
+      classifyDeviceCurrent(c, amps, _startingMotors.size > 0);
+    }
+
+    // One device opens per pass — the one that reaches its limit first.
+    const armed = [];
+    for (const [id, amps] of _deviceCurrents) {
+      const c = components.find(x => x.id === id);
+      if (c && !deviceIsOpen(c)) armed.push({ comp: c, current: amps });
+    }
+    // Devices carrying no current still cool, so their accumulators must advance too.
+    for (const c of components) {
+      if (!isProtectiveDevice(c) || deviceIsOpen(c)) continue;
+      if (!_deviceCurrents.has(c.id)) armed.push({ comp: c, current: 0 });
+    }
+
+    const pick = TBProtection.selectToOpen(armed, pass === 0 ? TBProtection.dt() : 0);
+    if (!pick) { settled = true; break; }
+    TBProtection.open(pick.comp, pick.state, components);
+    announceToSR(pick.comp.type === 'breaker' ? 'Breaker tripped - overcurrent detected'
+                                              : 'Fuse blown - overcurrent detected');
+  }
+
+  if (!settled) {
+    console.warn('solveCircuit: protection did not settle in ' + maxPasses + ' passes');
+    TBProtection.record({
+      class: FaultClass.UNSOLVABLE, severity: FaultSeverity.CRITICAL, componentId: null,
+      reason: 'protective devices did not reach a stable state', action: 'Protection model did not settle'
+    });
+  }
+  if (TBProtection.opened().length > 0) autoSave();
+
+  // Devices that are already open stay reported for as long as they are open.
+  if (simRunning) recordOpenDevices(components);
+  publishFaults();
+
+  if (meterActive && meterProbe1 && meterProbe2) takeMeasurement();
+  if (ncvtActive && window.detectNCV) window.detectNCV();
+}
+
+/**
+ * One electrical pass: read the shared state (`components`, `wires`, each
+ * component's `props`) and write the answers back into the shared result maps
+ * that the renderer and the meters read.
  *
  * Writes (all cleared on entry, so a component absent from `compResults` was
  * simply never solved this pass — treat missing fields as absent, not zero):
@@ -335,12 +392,142 @@ let _solveStateHistory = []; // Track contactor states to detect oscillations
  *   - `branchCurrents` branch key → amps
  *
  * Re-entrant by design: a coil that picks up or drops out changes the contact
- * states mid-solve and the solver calls itself again to settle. `_solveDepth`
- * caps that at 5 levels and `_solveStateHistory` detects a contact set that
+ * states mid-pass and the pass calls itself again to settle. `_solveDepth` caps
+ * that at 5 levels and `_solveStateHistory` detects a contact set that
  * oscillates, so a chattering control circuit stops instead of hanging the tab.
- * Blowing a fuse or tripping a breaker also mutates props and re-solves.
+ * Protective devices are NOT touched here — that is solveCircuit's job.
  */
-function solveCircuit() {
+
+// ── Per-component condition classification ──
+// Runs ONCE per electrical pass, from solveCircuit(), after the pass has fully
+// settled. It deliberately does not live inside solveElectricalPass(): a coil
+// picking up re-enters that function and returns early, so anything at its tail
+// was silently skipped on exactly the frames where contacts changed state.
+//
+// Every condition here is derived from solved current and voltage rather than from
+// the fault label alone — a ground fault with no path to earth reports no current,
+// an open winding is only an open circuit when it is actually in circuit, and a
+// stalled motor is recognised by current that does not decay.
+function classifyComponents() {
+  if (!simRunning) return;
+  const dtNow = TBProtection.dt();
+  for (const c of components) {
+    const cr = compResults[c.id];
+    const fm = faultOf(c);
+
+    // Winding-to-frame faults: report the current actually flowing to ground.
+    if (fm === 'ground-fault') {
+      const gfr = compResults[c.id + '_gf'];
+      classifyComponentGroundFault(c, gfr ? gfr.current : 0);
+    }
+
+    // Motors: voltage band, stall, and overload heat.
+    if (c.type === 'fan' || c.type === 'compressor') {
+      const nameplateV = c.type === 'fan' ? c.props.motorVoltage : c.props.nominalVoltage;
+      const I = cr && isFinite(cr.current) ? cr.current : 0;
+      // Full-load current from the nameplate: the reference the overload element
+      // and the stall classifier both measure against.
+      const hpNum = HP_TO_NUM[c.props.hp] || (c.type === 'compressor' ? 2 : 0.5);
+      const fla = nameplateV > 0 ? (hpNum * 746) / nameplateV : 0;
+      if (cr && cr.current > 0.001) {
+        classifyMotorVoltage(c, nameplateV, cr.voltageDrop);
+        const heat = accumulateMotorHeat(c, I, fla, dtNow);
+        if (cr) cr._motorHeat = heat;
+        const stalled = c.type === 'compressor'
+          ? COMPRESSOR_STALL_FAULTS.has(fm)
+          : fm === 'locked-rotor';
+        if (stalled) {
+          classifyLockedRotor(c, I, fla, heat);
+        } else if (fla > 0 && I > fla * PROTECTION.NO_DAMAGE_RATIO && !_startingMotors.has(c.id)
+                   && !_startingMotors.has(c.id + '_run')) {
+          TBProtection.record({
+            class: FaultClass.OVERLOAD, severity: heat > 0.5 ? FaultSeverity.CRITICAL : FaultSeverity.WARNING,
+            componentId: c.id, measured: { current: I }, threshold: { rating: fla },
+            reason: `motor drawing ${I.toFixed(1)} A against ${fla.toFixed(1)} A full-load`,
+            action: `Motor overloaded — ${(I / fla).toFixed(1)}x full-load current`
+          });
+        }
+      } else {
+        accumulateMotorHeat(c, 0, fla, dtNow);   // cools while de-energized
+      }
+    }
+
+    // Open elements that are wired into a live circuit: an open bulb is only
+    // interesting when there was supposed to be current through it.
+    if ((fm === 'open' || fm === 'open-run' || fm === 'open-start') &&
+        (c.type === 'resistor' || c.type === 'bulb' || c.type === 'outlet' ||
+         c.type === 'fan' || c.type === 'compressor' ||
+         c.type === 'contactor_coil' || c.type === 'relay_coil')) {
+      TBProtection.record({
+        class: FaultClass.OPEN_CIRCUIT, severity: FaultSeverity.WARNING, componentId: c.id,
+        reason: fm === 'open' ? 'element is open — no current can flow through it'
+                              : `${fm === 'open-run' ? 'run' : 'start'} winding is open`,
+        action: fm === 'open' ? 'Open circuit' : `Compressor ${fm === 'open-run' ? 'run' : 'start'} winding open`
+      });
+    }
+
+    // Degraded connections and contacts.
+    if (fm === 'high-resistance') {
+      const drop = cr && isFinite(cr.voltageDrop) ? cr.voltageDrop : 0;
+      TBProtection.record({
+        class: FaultClass.HIGH_RESISTANCE, severity: FaultSeverity.WARNING, componentId: c.id,
+        measured: { voltage: drop, current: cr && isFinite(cr.current) ? cr.current : 0 },
+        reason: `high-resistance connection dropping ${drop.toFixed(1)} V`,
+        action: `High resistance — ${drop.toFixed(1)} V dropped across it`
+      });
+    }
+    if (fm === 'welded') {
+      TBProtection.record({
+        class: FaultClass.SHORT_CIRCUIT, severity: FaultSeverity.WARNING, componentId: c.id,
+        reason: 'contacts are welded closed and no longer follow the control command',
+        action: 'Contacts welded closed'
+      });
+    }
+    if (fm === 'stuck-open') {
+      TBProtection.record({
+        class: FaultClass.OPEN_CIRCUIT, severity: FaultSeverity.WARNING, componentId: c.id,
+        reason: 'contacts are stuck open and no longer follow the control command',
+        action: 'Contacts stuck open'
+      });
+    }
+
+    // Resistive loads past their power rating.
+    if ((c.type === 'bulb' || c.type === 'resistor') && cr && isFinite(cr.watts)) {
+      classifyLoadPower(c, cr.watts, c.props.wattRating);
+    }
+
+    // Capacitors that are not what the nameplate says.
+    if (c.type === 'capacitor' && (fm === 'weak' || fm === 'out-of-tolerance')) {
+      const actual = effectiveCapacitance(c);
+      TBProtection.record({
+        class: FaultClass.HIGH_RESISTANCE,
+        severity: fm === 'weak' ? FaultSeverity.WARNING : FaultSeverity.INFO,
+        componentId: c.id,
+        measured: { capacitance: actual }, threshold: { rating: c.props.capacitance },
+        reason: `measures ${actual.toFixed(1)} µF against a ${c.props.capacitance} µF nameplate`,
+        action: `Capacitor ${fm === 'weak' ? 'weak' : 'out of tolerance'} — ${actual.toFixed(1)} µF of ${c.props.capacitance} µF`
+      });
+    }
+  }
+
+}
+
+// Register the current a protective device is carrying, for the protection layer
+// to act on after the whole circuit is solved. Highest reading wins: a device can
+// be reached by more than one source pairing (three-phase especially), and it is
+// the worst case that decides whether it opens.
+function recordDeviceCurrent(c, amps) {
+  if (!isProtectiveDevice(c)) return;
+  const I = (typeof amps === 'number' && isFinite(amps)) ? Math.abs(amps) : 0;
+  const prev = _deviceCurrents.get(c.id);
+  if (prev === undefined || I > prev) _deviceCurrents.set(c.id, I);
+}
+
+let _sourceConflict = null;                 // set per pass by classifySourceTopology
+const _xfmrPriBranch = new Map();           // transformer id → its solved primary branch
+const _shortedSources = new Map();          // source id → bolted fault current, per pass
+
+function solveElectricalPass() {
   if (_solveDepth > 5) return; // prevent infinite recursion
   // The oscillation guard only means anything WITHIN one top-level solve.  Carrying
   // it across frames made a legitimate contact change match a stale entry from an
@@ -352,6 +539,7 @@ function solveCircuit() {
   nodeVoltages = {};
   branchCurrents = {};
   compResults = {};
+  if (_solveDepth === 1) { _sourceConflict = null; _shortedSources.clear(); _xfmrPriBranch.clear(); }
   if (components.length === 0) return;
 
   // ── Build net graph using Union-Find ──
@@ -372,17 +560,35 @@ function solveCircuit() {
   // Wires merge nodes
   for (const w of wires) union(key(w.gx1, w.gy1), key(w.gx2, w.gy2));
 
-  // Closed switches and intact fuses merge nodes (zero resistance connections)
+  // Closed switches and intact fuses merge nodes (zero resistance connections).
+  //
+  // Contact faults are decided by contactConducts(), which lets a welded contact
+  // stay closed regardless of what the coil is asking for and a stuck-open one
+  // stay open regardless. A high-resistance contact conducts but is NOT merged
+  // here — it becomes a resistive branch further down, so it drops real voltage
+  // under load and reads on an ohmmeter instead of being invisible.
+  // NOTE: closed switches, contacts, fuses and breakers are deliberately NOT
+  // merged here any more. They are stamped as low-impedance BRANCHES in the phasor
+  // solve, which is what gives each of them a real, solved current — including a
+  // device sitting in one leg of a parallel pair, which net merging could never
+  // represent. Only genuinely ideal connections (wires, bolted faults) merge.
   for (const c of components) {
-    if (((c.type === 'switch' || c.type === 'time_delay') && c.props.closed) || ((c.type === 'contactor_contact' || c.type === 'relay_contact') && c.props.contactClosed)) union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
-    if ((c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') && !c.props.blown) union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
-    if (c.type === 'breaker' && !c.props.tripped) union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
-    // Short-circuit fault: merge the two terminal nodes (load becomes a wire)
-    if (c.props.faultMode === 'short') union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
+    // Bolted short across a two-terminal element: it becomes a wire. Restricted to
+    // the parts where that is the right model — a shorted coil or winding is
+    // modelled as collapsed resistance instead (see FAULT_MODEL), because those
+    // fail by losing turns rather than by becoming a bar of copper, and the
+    // difference is what lets the control fuse do its job.
+    if (c.props.faultMode === 'short' && BOLTED_SHORT_TYPES.has(c.type)) {
+      union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
+    }
     // Compressor short faults: merge specific winding terminals
     if (c.type === 'compressor' && c.gx3 !== undefined) {
       if (c.props.faultMode === 'short-run') union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
       if (c.props.faultMode === 'short-start') union(key(c.gx1, c.gy1), key(c.gx3, c.gy3));
+    }
+    // Transformer primary/secondary winding shorted through to its own terminals.
+    if (c.type === 'transformer' && c.gx3 !== undefined) {
+      if (c.props.faultMode === 'short-primary') union(key(c.gx1, c.gy1), key(c.gx2, c.gy2));
     }
   }
 
@@ -408,10 +614,33 @@ function solveCircuit() {
   const _earthPreBond = new Map(); // earth ground id → pre-bond root of gx1
   const _neutralPreBond = new Set(); // pre-bond roots of source neutral (gx2) terminals
   const _circuitNets = new Set(); // pre-bond roots of all non-ground component terminals
+  // Pre-bond root → conductor name, so a ground fault can say WHICH conductor is
+  // faulted. It has to be captured here: once the earth bond is applied the roots
+  // move, and looking them up afterwards never matches.
+  const _conductorPreBond = new Map();
   for (const c of components) {
     if (c.type === 'earth_ground') { _earthPreBond.set(c.id, find(key(c.gx1, c.gy1))); continue; }
     if (isSource(c.type)) {
       _neutralPreBond.add(find(key(c.gx2, c.gy2)));
+      const hot = find(key(c.gx1, c.gy1));
+      if (!_conductorPreBond.has(hot)) _conductorPreBond.set(hot, c.type === 'dc_source' ? 'DC+' : 'L1');
+      const second = find(key(c.gx2, c.gy2));
+      if (!_conductorPreBond.has(second)) {
+        _conductorPreBond.set(second, c.type === 'dc_source' ? 'DC-' : (c.type === 'ac_240' ? 'L2' : 'N'));
+      }
+      if (c.gx3 !== undefined) {
+        const l3 = find(key(c.gx3, c.gy3));
+        if (!_conductorPreBond.has(l3)) _conductorPreBond.set(l3, 'L3');
+      }
+      if (c.gx4 !== undefined) {
+        const n4 = find(key(c.gx4, c.gy4));
+        if (!_conductorPreBond.has(n4)) _conductorPreBond.set(n4, 'N');
+      }
+      // The middle terminal of a delta/wye source is L2.
+      if (c.gx3 !== undefined) {
+        const l2 = find(key(c.gx2, c.gy2));
+        _conductorPreBond.set(l2, 'L2');
+      }
     }
     _circuitNets.add(find(key(c.gx1, c.gy1)));
     _circuitNets.add(find(key(c.gx2, c.gy2)));
@@ -427,6 +656,29 @@ function solveCircuit() {
   // Each net is identified by its Union-Find root.
   // Edges are loads (resistors/bulbs) connecting two different nets.
   const sources = components.filter(c => isSource(c.type) && c.props.on !== false);
+
+  // ── Source topology check ──
+  // Two sources sharing conductors used to make the reachability filter reject
+  // every load between them, so the load silently produced no result at all.
+  // Classify the pairing explicitly instead — the request's "annotate and keep
+  // solving unless the topology is contradictory".
+  {
+    const pairs = [];
+    for (let i = 0; i < sources.length; i++) {
+      for (let j = i + 1; j < sources.length; j++) {
+        const a = sources[i], b = sources[j];
+        const aNets = new Set([find(key(a.gx1, a.gy1)), find(key(a.gx2, a.gy2))]);
+        if (a.gx3 !== undefined) aNets.add(find(key(a.gx3, a.gy3)));
+        if (a.gx4 !== undefined) aNets.add(find(key(a.gx4, a.gy4)));
+        const bNets = [find(key(b.gx1, b.gy1)), find(key(b.gx2, b.gy2))];
+        if (b.gx3 !== undefined) bNets.push(find(key(b.gx3, b.gy3)));
+        if (b.gx4 !== undefined) bNets.push(find(key(b.gx4, b.gy4)));
+        const shared = bNets.filter(n => aNets.has(n)).length;
+        if (shared > 0) pairs.push({ a, b, sharedNets: shared });
+      }
+    }
+    if (pairs.length > 0) _sourceConflict = classifySourceTopology(pairs);
+  }
 
   // Detect circuit source type for physics rules
   const hasAC = sources.some(s => isACSource(s.type));
@@ -535,9 +787,20 @@ function solveCircuit() {
           // Capacitors block DC — act as open circuit (no steady-state current)
           c.props.resistance = CONFIG.OPEN_CIRCUIT_RESISTANCE;
         } else {
-          const C_uF = Math.max(c.props.capacitance || 10, 0.001); // μF, clamp > 0
-          const Xc = 1 / (2 * Math.PI * srcFreq * C_uF * 1e-6);
-          c.props.resistance = Math.round(Xc * 10) / 10; // round to 1 decimal
+          // Reactance follows the capacitance ACTUALLY present, which for a weak or
+          // out-of-tolerance part is not its nameplate. effectiveCapacitance() is
+          // shared with the µF meter, so what the student measures and what the
+          // circuit does can never disagree.
+          const fmCap = faultOf(c);
+          if (fmCap === 'open') {
+            c.props.resistance = CONFIG.OPEN_CIRCUIT_RESISTANCE;   // no path at all
+          } else if (fmCap === 'short') {
+            c.props.resistance = CONFIG.MIN_RESISTANCE;            // plates shorted
+          } else {
+            const C_uF = Math.max(effectiveCapacitance(c), 0.001); // μF, clamp > 0
+            const Xc = 1 / (2 * Math.PI * srcFreq * C_uF * 1e-6);
+            c.props.resistance = Math.round(Xc * 10) / 10; // round to 1 decimal
+          }
         }
       }
       if (c.type === 'outlet') {
@@ -570,35 +833,85 @@ function solveCircuit() {
   // the impedance every frame until the motor's current decayed to nothing.
   const loads = components
     .filter(c => ['resistor', 'bulb', 'fan', 'capacitor', 'outlet'].includes(c.type) && c.props.faultMode !== 'open' && c.props.faultMode !== 'short')
-    .map(c => ({ id: c.id, type: c.type, gx1: c.gx1, gy1: c.gy1, gx2: c.gx2, gy2: c.gy2, props: { ...c.props } }));
+    .map(c => ({ id: c.id, type: c.type, gx1: c.gx1, gy1: c.gy1, gx2: c.gx2, gy2: c.gy2,
+      // A high-resistance element still conducts, just badly — it starves the load
+      // and shows up on an ohmmeter rather than reading open.
+      props: { ...c.props, resistance: loadResistanceFor(c, c.props.resistance) } }));
+
+  // NOTE: contacts are no longer added to `loads`. Every switching and protective
+  // device — healthy or high-resistance — is stamped once by stampDevices() in the
+  // phasor solve, which is also where its solved branch current comes from.
+
+  // ── Winding-to-frame ground faults ──
+  // Modelled as a real resistive branch from the faulted terminal to the earth
+  // bus, so current flows only when the grounding path is genuinely complete. On
+  // an ungrounded system the fault is present and draws nothing — which is the
+  // point of the exercise, and something a boolean flag could never show.
+  for (const c of components) {
+    if (faultOf(c) !== 'ground-fault') continue;
+    loads.push({ id: c.id + '_gf', type: 'resistor', _groundFaultOf: c.id,
+      gx1: c.gx1, gy1: c.gy1, gx2: GROUND_BUS.earth.gx, gy2: GROUND_BUS.earth.gy,
+      props: { resistance: FAULT_MODEL.GROUND_FAULT_R, powerFactor: 1, inductance: 0 } });
+  }
+
   // Contactor coils act as loads (draw current like a resistor)
   for (const c of components) {
-    if (c.type === 'contactor_coil' && c.props.coilResistance > 0 && c.props.faultMode !== 'open' && c.props.faultMode !== 'short') {
-      loads.push({ id: c.id, type: 'resistor', gx1: c.gx1, gy1: c.gy1, gx2: c.gx2, gy2: c.gy2,
-        props: { resistance: c.props.coilResistance, powerFactor: c.props.powerFactor, inductance: c.props.inductance || 0 } });
-    }
-    if (c.type === 'relay_coil' && c.props.coilResistance > 0 && c.props.faultMode !== 'open' && c.props.faultMode !== 'short') {
-      loads.push({ id: c.id, type: 'resistor', gx1: c.gx1, gy1: c.gy1, gx2: c.gx2, gy2: c.gy2,
-        props: { resistance: c.props.coilResistance, powerFactor: c.props.powerFactor, inductance: c.props.inductance || 0 } });
+    const coilFault = faultOf(c);
+    // Shorted turns: resistance collapses but the coil is still a coil. It draws
+    // heavy current the control fuse can clear, rather than becoming a dead short
+    // that the source alone has to absorb.
+    const coilR = coilFault === 'short'
+      ? Math.max(c.props.coilResistance * FAULT_MODEL.COIL_SHORT_FRACTION, CONFIG.MIN_RESISTANCE)
+      : c.props.coilResistance;
+    if ((c.type === 'contactor_coil' || c.type === 'relay_coil') && c.props.coilResistance > 0 && coilFault !== 'open') {
+      // Shorted turns take the inductance down with the resistance — a coil with
+      // part of its winding bypassed has fewer effective turns, so both fall
+      // together. Scaling L by the same fraction keeps the impedance dominated by
+      // the loss rather than by a nameplate reactance the coil no longer has.
+      const coilL = coilFault === 'short'
+        ? (c.props.inductance || 0) * FAULT_MODEL.COIL_SHORT_FRACTION
+        : (c.props.inductance || 0);
+      loads.push({ id: c.id, type: 'resistor', _inductanceOverride: true,
+        gx1: c.gx1, gy1: c.gy1, gx2: c.gx2, gy2: c.gy2,
+        props: { resistance: coilR, powerFactor: c.props.powerFactor, inductance: coilL } });
     }
     // Compressor: two windings — run (C→R) and start (C→S)
     if (c.type === 'compressor' && c.gx3 !== undefined) {
       const fm = c.props.faultMode || 'none';
+      // A rotor that never comes up to speed. Mechanical seizure is only one way
+      // to get there: a single-phase CSR motor develops NO starting torque without
+      // a working start winding, so an open or shorted start winding — or an open
+      // start circuit outside it — leaves the machine humming at locked-rotor
+      // current exactly as a seized bearing would. An open run winding is the same
+      // story from the other side: the start winding alone cannot carry it to
+      // speed. All of them stall, and the locked-rotor current that follows is a
+      // result of the speed model, not a separate assertion.
+      const stalled = COMPRESSOR_STALL_FAULTS.has(fm);
       if (fm !== 'open-run' && fm !== 'short-run' && c.props.runResistance > 0) {
-        loads.push({ id: c.id + '_run', type: 'fan', _compressorId: c.id, _winding: 'run',
+        loads.push({ id: c.id + '_run', type: 'fan', _compressorId: c.id, _winding: 'run', _stalled: stalled,
           gx1: c.gx1, gy1: c.gy1, gx2: c.gx2, gy2: c.gy2,
           props: { resistance: c.props.runResistance, inductance: c.props.runInductance || 0, powerFactor: 0.8, hp: c.props.hp, _backEMF: c.props.backEMF || 0 } });
       }
       // Start winding: check for automatic cutout (potential relay / centrifugal switch)
       let startCutoff = false;
-      if (c.props.startCutout && simRunning) {
+      if (c.props.startCutout && simRunning && fm !== 'cutout-failure' && !stalled) {
         // No record = not started yet (elapsed 0), not "started ages ago"
         const ss = surgeState[c.id];
         const elapsed = ss ? Math.max(0, animTime - ss.startTime) : 0;
         startCutoff = elapsed >= (c.props.startCutoutTime || 1.5);
       }
-      if (!startCutoff && fm !== 'open-start' && fm !== 'short-start' && c.props.startResistance > 0) {
-        loads.push({ id: c.id + '_start', type: 'fan', _compressorId: c.id, _winding: 'start',
+      // 'cutout-failure' = the potential relay never drops the start winding out, so
+      //   it stays energized past its duty and the machine draws start current
+      //   continuously — the classic burned start winding.
+      // 'open-start-circuit' = the winding itself is healthy but its external
+      //   circuit is broken. The winding still ohms out normally C→S, and the motor
+      //   hums without starting: the fault a student is meant to distinguish from a
+      //   genuinely open winding.
+      // A stalled rotor keeps the start winding in circuit too, because the cutout
+      //   is speed-driven and the rotor never gets there.
+      if (!startCutoff && fm !== 'open-start' && fm !== 'short-start' &&
+          fm !== 'open-start-circuit' && c.props.startResistance > 0) {
+        loads.push({ id: c.id + '_start', type: 'fan', _compressorId: c.id, _winding: 'start', _stalled: stalled,
           gx1: c.gx1, gy1: c.gy1, gx2: c.gx3, gy2: c.gy3,
           props: { resistance: c.props.startResistance, inductance: c.props.startInductance || 0, powerFactor: 0.6, hp: c.props.hp, _backEMF: c.props.backEMF || 0 } });
       }
@@ -613,7 +926,12 @@ function solveCircuit() {
   // ── Compute impedance Z for inductive loads (fans, coils) ──
   for (const ld of loads) {
     const origComp = compById.get(ld.id);
-    let L = origComp ? (origComp.props.inductance || ld.props.inductance || 0) : (ld.props.inductance || 0);
+    // A load that computed its own inductance keeps it. Without this the original
+    // component's nameplate value won, so a shorted coil kept full reactance and
+    // drew a near-normal current.
+    let L = ld._inductanceOverride
+      ? (ld.props.inductance || 0)
+      : (origComp ? (origComp.props.inductance || ld.props.inductance || 0) : (ld.props.inductance || 0));
 
     // Compressor motor speed model:
     // At locked rotor (startup): impedance ≈ R only (inductance effect minimal)
@@ -623,8 +941,13 @@ function solveCircuit() {
       const compId = ld._compressorId;
       const ss = surgeState[compId];
       const elapsed = ss ? Math.max(0, animTime - ss.startTime) : 0;
-      // Motor speed ramps: 0 at startup → 1 at full speed (tau ~0.5s, settled ~2.5s)
-      const speedFactor = 1 - Math.exp(-elapsed / 0.5);
+      // Motor speed ramps: 0 at startup → 1 at full speed (tau ~0.5s, settled ~2.5s).
+      // A stalled rotor is pinned at zero, and everything that follows from speed —
+      // effective inductance, back-EMF, start-winding cutout — follows from that one
+      // fact rather than being asserted separately. The locked-rotor current is
+      // therefore a RESULT of the electrical model, not a number typed in.
+      const stalledRotor = ld._stalled === true;
+      const speedFactor = stalledRotor ? 0 : (1 - Math.exp(-elapsed / 0.5));
       ld.props._speedFactor = speedFactor;
       // Scale inductance with speed: locked rotor has near-zero effective inductance
       L = L * speedFactor;
@@ -634,6 +957,11 @@ function solveCircuit() {
       }
     }
 
+    // The phasor solver stamps R + jωL directly, so the true winding resistance
+    // and the effective inductance both have to survive this pass. `resistance` is
+    // still overwritten with the scalar |Z| because the properties panel, the data
+    // boxes and the ohmmeter all read it, but the solve no longer depends on it.
+    ld.props._effectiveL = L;
     if (L > 0) {
       const ldSrcType = compSourceType(origComp || ld);
       const imp = computeImpedance(ld.props.resistance, L, _acFreq, ldSrcType);
@@ -660,866 +988,846 @@ function solveCircuit() {
     if (!ss.prevEnergized && ss.startTime === -Infinity) ss.startTime = animTime;
     const hpNum = origComp.type === 'fan' ? (_hpMap[origComp.props.hp] || 0.5) : 0;
     const tau = origComp.type === 'fan' ? Math.min(0.09 + hpNum * 0.04, 0.5) : CONFIG.SURGE_TAU;
+    // A locked rotor never accelerates, so the inrush never decays. Holding the
+    // surge factor at its peak is what makes locked-rotor current sustained rather
+    // than a transient — and it is deliberately NOT added to _startingMotors, so
+    // the protection layer classifies it as an overload instead of a legitimate
+    // start. That single difference is what lets a breaker ride through a start
+    // and still trip a stall.
+    if (faultOf(origComp) === 'locked-rotor') {
+      _surgeLookup[ld.id] = CONFIG.SURGE_PEAK_FACTOR;
+      continue;
+    }
     const surgeFactor = computeSurgeFactor(ss, animTime, tau);
-    if (surgeFactor > 1.001) _surgeLookup[ld.id] = surgeFactor;
+    if (surgeFactor > 1.001) { _surgeLookup[ld.id] = surgeFactor; _startingMotors.add(ld.id); }
+  }
+  // Compressors accelerate on their own speed ramp rather than the surge lookup,
+  // so their inrush window is the time it takes the rotor to come up to speed.
+  // A rotor that never accelerates leaves this window and the same current is then
+  // classified as an overload — which is exactly the locked-rotor case.
+  if (simRunning) for (const c of components) {
+    if (c.type !== 'compressor') continue;
+    // A stalled compressor is never "starting" — the window it would occupy is
+    // exactly the window it can never leave.
+    const fm = faultOf(c);
+    if (COMPRESSOR_STALL_FAULTS.has(fm)) continue;
+    const ss = surgeState[c.id];
+    if (!ss || !isFinite(ss.startTime)) continue;
+    if (Math.max(0, animTime - ss.startTime) < 1.5) _startingMotors.add(c.id);
   }
 
   if (sources.length === 0) return;
 
-  // Adjacency: net -> [{ net, load, resistance }]
-  const adj = {};
-  function addAdj(netA, netB, load) {
-    if (!adj[netA]) adj[netA] = [];
-    if (!adj[netB]) adj[netB] = [];
-    adj[netA].push({ net: netB, load, resistance: load.props.resistance });
-    adj[netB].push({ net: netA, load, resistance: load.props.resistance });
+  // ═══════════════════════════════════════════════════════════════
+  //  PHASOR NETWORK SOLVE
+  // ═══════════════════════════════════════════════════════════════
+  // One complex-valued nodal solution for the whole board, replacing the previous
+  // approach of solving each source — and each three-phase pairing — as a separate
+  // real-valued RMS problem writing into a shared node map. Three consequences
+  // matter, and all three were impossible before:
+  //
+  //   • Phase relationships are real. L1/L2/L3 sit at 0°, −120°, +120°, so
+  //     line-to-line voltage, neutral current and unbalance are computed rather
+  //     than asserted.
+  //   • Multiple sources are genuinely solved together. Each contributes a Norton
+  //     pair and the network distributes the load between them.
+  //   • Every branch has a current. Switching devices are low-impedance branches
+  //     instead of net merges, so a protective device in a parallel path reads the
+  //     current it actually carries.
+  //
+  // See phasor.js for the sign, angle and power conventions everything here obeys.
+
+  const EARTH_KEY = key(GROUND_BUS.earth.gx, GROUND_BUS.earth.gy);
+  const nodePhasors = {};              // net root → complex voltage
+  const _branchOf = new Map();         // component id → { br, net } for current read-back
+
+  // ── Which frequency does each galvanically-connected island run at? ──
+  // AC and DC cannot share one phasor solution: they are different frequencies,
+  // and superposing them would be meaningless. Islands are solved independently,
+  // each at its own ω, and a single island fed by both is a topology fault rather
+  // than something to force through the matrix.
+  const _srcFreqOf = src => (src.type === 'dc_source') ? 0 : (src.props.frequency || 60);
+
+  // Terminal keys a source drives, and the internal nodes it needs.
+  function sourceTerminals(src) {
+    const t = [[src.gx1, src.gy1], [src.gx2, src.gy2]];
+    if (src.gx3 !== undefined) t.push([src.gx3, src.gy3]);
+    if (src.gx4 !== undefined) t.push([src.gx4, src.gy4]);
+    return t.map(([x, y]) => find(key(x, y)));
   }
 
-  for (const ld of loads) {
-    const n1 = find(key(ld.gx1, ld.gy1));
-    const n2 = find(key(ld.gx2, ld.gy2));
-    if (n1 !== n2 && ld.props.resistance > 0) {
-      addAdj(n1, n2, ld);
-    }
-  }
+  // ── Stamp one source as Norton pairs ──
+  // Sources are never ideal: each winding sits behind its own Rs, derived from the
+  // declared available fault current. That is what lets several of them coexist in
+  // one matrix, and what keeps a bolted fault finite.
+  function stampSource(net, src) {
+    const V = src.props.voltage || 0;
+    const Rs = sourceInternalR(src);
+    const Y = Cx.make(1 / Rs, 0);
+    const emf = (mag, ang) => Cx.fromPolar(mag, ang);
+    const put = (aKey, bKey, E, tag) => addBranch(net, aKey, bKey, Y, Cx.mul(E, Y), src.id + tag, { source: src.id });
 
-  // Expand 3-phase sources into virtual 2-terminal source pairings
-  // Each pair of terminals (L1-L2, L2-L3, L1-L3) is treated as an independent source
-  const expandedSources = [];
-  for (const src of sources) {
+    const n1 = find(key(src.gx1, src.gy1));
+    const n2 = find(key(src.gx2, src.gy2));
+
     if (src.type === 'ac_480' && src.gx3 !== undefined) {
-      // Delta 3-phase: 3 line-to-line pairings at 480V
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L1-L2', gx1: src.gx1, gy1: src.gy1, gx2: src.gx2, gy2: src.gy2 });
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L2-L3', id: src.id + '_23', gx1: src.gx2, gy1: src.gy2, gx2: src.gx3, gy2: src.gy3 });
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L1-L3', id: src.id + '_13', gx1: src.gx1, gy1: src.gy1, gx2: src.gx3, gy2: src.gy3 });
-    } else if (src.type === 'ac_480_wye' && src.gx4 !== undefined) {
-      // Wye 3-phase: 3 line-to-line at 480V + 3 line-to-neutral at 277V
-      const llV = src.props.voltage || 480;
-      const lnV = Math.round(llV / Math.sqrt(3));  // 480/√3 ≈ 277V
-      const lnProps = { ...src.props, voltage: lnV };
-      // Line-to-line pairings (480V)
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L1-L2', gx1: src.gx1, gy1: src.gy1, gx2: src.gx2, gy2: src.gy2 });
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L2-L3', id: src.id + '_23', gx1: src.gx2, gy1: src.gy2, gx2: src.gx3, gy2: src.gy3 });
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L1-L3', id: src.id + '_13', gx1: src.gx1, gy1: src.gy1, gx2: src.gx3, gy2: src.gy3 });
-      // Line-to-neutral pairings (277V)
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L1-N', id: src.id + '_1n', props: lnProps, gx1: src.gx1, gy1: src.gy1, gx2: src.gx4, gy2: src.gy4 });
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L2-N', id: src.id + '_2n', props: lnProps, gx1: src.gx2, gy1: src.gy2, gx2: src.gx4, gy2: src.gy4 });
-      expandedSources.push({ ...src, _virtual: true, _pairLabel: 'L3-N', id: src.id + '_3n', props: lnProps, gx1: src.gx3, gy1: src.gy3, gx2: src.gx4, gy2: src.gy4 });
-    } else {
-      expandedSources.push(src);
-    }
-  }
-
-  for (const src of expandedSources) {
-    const srcNet1 = find(key(src.gx1, src.gy1));
-    const srcNet2 = find(key(src.gx2, src.gy2));
-    const voltage = src.props.voltage;
-
-    // Check if srcNet1 can reach srcNet2 through zero-resistance paths
-    // (other sources act as zero-resistance bridges between their terminals)
-    // BFS through nets, bridging via any AC source terminals
-    const shortCheck = new Set([srcNet1]);
-    const sq = [srcNet1];
-    while (sq.length > 0) {
-      const currentNet = sq.shift();
-      for (const otherSrc of sources) {
-        if (otherSrc.id === src.id) continue;
-        const oN1 = find(key(otherSrc.gx1, otherSrc.gy1));
-        const oN2 = find(key(otherSrc.gx2, otherSrc.gy2));
-        if (find(oN1) === find(currentNet) && !shortCheck.has(find(oN2))) {
-          shortCheck.add(find(oN2)); sq.push(find(oN2));
-        }
-        if (find(oN2) === find(currentNet) && !shortCheck.has(find(oN1))) {
-          shortCheck.add(find(oN1)); sq.push(find(oN1));
-        }
-      }
-    }
-    const isShort = srcNet1 === srcNet2 || shortCheck.has(srcNet2);
-
-    if (isShort) {
-      // ── SHORT CIRCUIT: source terminals on same net (zero resistance path) ──
-      // Extremely high current flows — limited only by wire/internal resistance
-      const wireResistance = CONFIG.MIN_RESISTANCE; // near-zero ohms
-      const shortCurrent = voltage / wireResistance;
-      const shortWatts = voltage * shortCurrent;
-
-      // Check for fuses/breakers in the short path — trip/blow the first one found
-      for (const c of components) {
-        if (((c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') && !c.props.blown) || (c.type === 'breaker' && !c.props.tripped)) {
-          const fNet1 = find(key(c.gx1, c.gy1));
-          const fNet2 = find(key(c.gx2, c.gy2));
-          // Component is in the short net (either terminal on srcNet1 or srcNet2)
-          if (fNet1 === srcNet1 || fNet2 === srcNet1 || fNet1 === srcNet2 || fNet2 === srcNet2) {
-            if ((c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse')) { c.props.blown = true; announceToSR('Fuse tripped - overcurrent detected'); }
-            if (c.type === 'breaker') { c.props.tripped = true; announceToSR('Breaker tripped - overcurrent detected'); }
-            compResults[c.id] = { voltageDrop: 0, current: shortCurrent, watts: 0, resistance: 0 };
-            branchCurrents[c.id] = shortCurrent;
-            autoSave();
-            solveCircuit(); // re-solve with blown fuse
-            return;
-          }
-        }
-      }
-
-      // No fuse protection — source overloads
-      branchCurrents[src.id] = shortCurrent;
-      compResults[src.id] = {
-        voltageDrop: voltage, current: shortCurrent, watts: shortWatts,
-        resistance: wireResistance,
-        overload: true,
-        shortCircuit: true
-      };
-
-      // Also mark any other sources in the short path as shorted
-      for (const otherSrc of sources) {
-        if (otherSrc.id === src.id) continue;
-        const oN1 = find(key(otherSrc.gx1, otherSrc.gy1));
-        const oN2 = find(key(otherSrc.gx2, otherSrc.gy2));
-        if (shortCheck.has(oN1) || shortCheck.has(oN2)) {
-          const oV = otherSrc.props.voltage;
-          const oShortCurrent = oV / wireResistance;
-          branchCurrents[otherSrc.id] = oShortCurrent;
-          compResults[otherSrc.id] = {
-            voltageDrop: oV, current: oShortCurrent, watts: oV * oShortCurrent,
-            resistance: wireResistance, overload: true, shortCircuit: true
-          };
-        }
-      }
-
-      // Mark all nodes in the short path as energized
-      for (const k of Object.keys(parent)) {
-        if (shortCheck.has(find(k))) nodeVoltages[k] = voltage;
-      }
-      for (const w of wires) {
-        for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
-          if (shortCheck.has(find(k))) nodeVoltages[k] = voltage;
-        }
-      }
-
-      // Zero out all loads (all shorted — no voltage drop across them)
-      for (const ld of loads) {
-        const n1 = find(key(ld.gx1, ld.gy1));
-        const n2 = find(key(ld.gx2, ld.gy2));
-        if (n1 === n2) {
-          compResults[ld.id] = { voltageDrop: 0, current: 0, watts: 0, resistance: ld.props.resistance };
-          branchCurrents[ld.id] = 0;
-        }
-      }
-
-      continue;
-    }
-
-    // ── Find loads reachable from this source using BFS ──
-    // BFS from srcNet1 through loads to find which nets srcNet1 can reach
-    const reachFromL1 = new Set([srcNet1]);
-    const q1 = [srcNet1];
-    while (q1.length > 0) {
-      const net = q1.shift();
-      for (const ld of loads) {
-        const n1 = find(key(ld.gx1, ld.gy1));
-        const n2 = find(key(ld.gx2, ld.gy2));
-        if (n1 === n2 || ld.props.resistance <= 0) continue;
-        if (n1 === net && !reachFromL1.has(n2)) { reachFromL1.add(n2); q1.push(n2); }
-        if (n2 === net && !reachFromL1.has(n1)) { reachFromL1.add(n1); q1.push(n1); }
-      }
-    }
-    // BFS from srcNet2 through loads to find which nets srcNet2 can reach
-    const reachFromN = new Set([srcNet2]);
-    const q2 = [srcNet2];
-    while (q2.length > 0) {
-      const net = q2.shift();
-      for (const ld of loads) {
-        const n1 = find(key(ld.gx1, ld.gy1));
-        const n2 = find(key(ld.gx2, ld.gy2));
-        if (n1 === n2 || ld.props.resistance <= 0) continue;
-        if (n1 === net && !reachFromN.has(n2)) { reachFromN.add(n2); q2.push(n2); }
-        if (n2 === net && !reachFromN.has(n1)) { reachFromN.add(n1); q2.push(n1); }
-      }
-    }
-    // A load is part of the circuit only if BOTH its terminals can reach
-    // both source terminals (forming a complete loop L1 → load → N)
-    const reachableNets = new Set();
-    for (const n of reachFromL1) { if (reachFromN.has(n)) reachableNets.add(n); }
-    // Always include source nets
-    reachableNets.add(srcNet1);
-    reachableNets.add(srcNet2);
-
-    // Only include loads where BOTH terminals are reachable from BOTH source terminals
-    const srcLoads = loads.filter(ld => {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      if (n1 === n2 || ld.props.resistance <= 0) return false;
-      return reachFromL1.has(n1) && reachFromN.has(n2) || reachFromL1.has(n2) && reachFromN.has(n1);
-    });
-
-    // If no loads found but source terminals are connected, it's a short
-    if (srcLoads.length === 0 && reachableNets.has(srcNet1) && reachableNets.has(srcNet2)) {
-      // Check if the two source nets can reach each other through other sources
-      const shortCheck2 = new Set([srcNet1]);
-      const sq2 = [srcNet1];
-      while (sq2.length > 0) {
-        const n = sq2.shift();
-        for (const otherSrc of sources) {
-          if (otherSrc.id === src.id) continue;
-          const oN1 = find(key(otherSrc.gx1, otherSrc.gy1));
-          const oN2 = find(key(otherSrc.gx2, otherSrc.gy2));
-          if (oN1 === n && !shortCheck2.has(oN2)) { shortCheck2.add(oN2); sq2.push(oN2); }
-          if (oN2 === n && !shortCheck2.has(oN1)) { shortCheck2.add(oN1); sq2.push(oN1); }
-        }
-      }
-      if (shortCheck2.has(srcNet2)) {
-        // Short through other sources — trigger short circuit
-        const wireResistance = CONFIG.MIN_RESISTANCE;
-        const shortCurrent = voltage / wireResistance;
-        branchCurrents[src.id] = shortCurrent;
-        compResults[src.id] = {
-          voltageDrop: voltage, current: shortCurrent, watts: voltage * shortCurrent,
-          resistance: wireResistance, overload: true, shortCircuit: true
-        };
-        for (const k of Object.keys(parent)) {
-          const net = find(k);
-          if (shortCheck2.has(net)) nodeVoltages[k] = voltage;
-        }
-        continue;
-      }
-    }
-    if (srcLoads.length === 0) {
-      // No standard loads, but set node voltages for transformer primary detection
-      nodeVoltages[key(src.gx1, src.gy1)] = voltage;
-      nodeVoltages[key(src.gx2, src.gy2)] = 0;
-      // Set voltages on all nodes in the source nets
-      for (const k of Object.keys(parent)) {
-        const net = find(k);
-        if (net === srcNet1) nodeVoltages[k] = voltage;
-        else if (net === srcNet2) nodeVoltages[k] = 0;
-      }
-      for (const w of wires) {
-        for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
-          const net = find(k);
-          if (net === srcNet1) nodeVoltages[k] = voltage;
-          else if (net === srcNet2) nodeVoltages[k] = 0;
-        }
-      }
-      // 240V split-phase: shift reference so L1=+120V, L2=-120V (each leg 120V to ground)
-      if (src.type === 'ac_240') {
-        const shift = voltage / 2;
-        for (const k of Object.keys(nodeVoltages)) {
-          if (nodeVoltages[k] === undefined) continue;
-          const net = find(k);
-          if (net === srcNet1 || net === srcNet2) nodeVoltages[k] -= shift;
-        }
-      }
-      // Still set source results (no current, no watts)
-      compResults[src.id] = { voltageDrop: voltage, current: 0, watts: 0, resistance: Infinity };
-      branchCurrents[src.id] = 0;
-      continue;
-    }
-
-    // ── Nodal Analysis using conductance matrix ──
-    const allNets = new Set([srcNet1, srcNet2]);
-    for (const ld of srcLoads) {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      allNets.add(n1); allNets.add(n2);
-    }
-
-    // Index nets: ground (srcNet2) excluded from matrix
-    const netList = [...allNets].filter(n => n !== srcNet2);
-    const ni = {}; // net -> index
-    netList.forEach((n, i) => ni[n] = i);
-    const N = netList.length;
-    if (N === 0) continue;
-
-    // Build NxN conductance matrix + N+1 augmented column for known voltages
-    // Using regular arrays for reliability
-    const A = [];
-    for (let i = 0; i < N; i++) { A[i] = []; for (let j = 0; j <= N; j++) A[i][j] = 0; }
-
-    // Stamp conductances (only reachable loads)
-    for (const ld of srcLoads) {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      const g = 1 / ld.props.resistance;
-      const i1 = ni[n1], i2 = ni[n2]; // undefined if ground
-      if (i1 !== undefined) A[i1][i1] += g;
-      if (i2 !== undefined) A[i2][i2] += g;
-      if (i1 !== undefined && i2 !== undefined) { A[i1][i2] -= g; A[i2][i1] -= g; }
-    }
-
-    // Voltage source: V(srcNet1) = voltage
-    const si = ni[srcNet1];
-    if (si === undefined) continue;
-    for (let j = 0; j < N; j++) A[si][j] = 0;
-    A[si][si] = 1;
-    A[si][N] = voltage; // RHS
-
-    // Gaussian elimination with partial pivoting (inline, no separate function needed)
-    let singular = false;
-    for (let col = 0; col < N; col++) {
-      let maxR = col, maxV = Math.abs(A[col][col]);
-      for (let r = col + 1; r < N; r++) { if (Math.abs(A[r][col]) > maxV) { maxV = Math.abs(A[r][col]); maxR = r; } }
-      if (maxV < 1e-12) {
-        // Matrix is singular — no unique solution.  Zero every load on this source
-        // and move on; falling through to back substitution here would divide by a
-        // ~0 pivot and feed garbage into the per-load results.
-        for (const ld of srcLoads) {
-          branchCurrents[ld.id] = 0;
-          compResults[ld.id] = { voltageDrop: 0, current: 0, watts: 0, resistance: ld.props.resistance };
-        }
-        branchCurrents[src.id] = 0;
-        compResults[src.id] = { voltageDrop: voltage, current: 0, watts: 0, resistance: Infinity, overload: false };
-        singular = true;
-        break;
-      }
-      if (maxR !== col) { const tmp = A[col]; A[col] = A[maxR]; A[maxR] = tmp; }
-      for (let r = col + 1; r < N; r++) {
-        const f = A[r][col] / A[col][col];
-        for (let j = col; j <= N; j++) A[r][j] -= f * A[col][j];
-      }
-    }
-    if (singular) continue; // next source
-    // Back substitution
-    const Vn = new Array(N).fill(0);
-    for (let i = N - 1; i >= 0; i--) {
-      Vn[i] = A[i][N];
-      for (let j = i + 1; j < N; j++) Vn[i] -= A[i][j] * Vn[j];
-      Vn[i] /= A[i][i];
-      if (!isFinite(Vn[i])) Vn[i] = 0;
-    }
-
-    // ── Calculate per-load results from solved voltages ──
-    for (const ld of srcLoads) {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      const v1 = (n1 === srcNet2) ? 0 : (ni[n1] !== undefined ? Vn[ni[n1]] : 0);
-      const v2 = (n2 === srcNet2) ? 0 : (ni[n2] !== undefined ? Vn[ni[n2]] : 0);
-      const vDrop = Math.abs(v1 - v2);
-      const ldI = vDrop / ld.props.resistance;
-      const S = ldI * vDrop; // apparent power (VA)
-      const pf = (ld.props.powerFactor && compSourceType(ld) !== 'DC') ? ld.props.powerFactor : 1.0;
-      const realP = S * pf;
-      branchCurrents[ld.id] = ldI;
-      compResults[ld.id] = { voltageDrop: vDrop, current: ldI, watts: realP, resistance: ld.props.resistance,
-        ...(pf < 1 ? { apparentPower: S, reactivePower: S * Math.sqrt(1 - pf * pf), powerFactor: pf, phaseAngle: Math.acos(pf) * (180 / Math.PI) } : {}) };
-      if (ld.type === 'bulb' || ld.type === 'fan') ld.props._actualWatts = realP;
-      if (ld.props._impedance) { compResults[ld.id].impedance = ld.props._impedance; compResults[ld.id].reactance = ld.props._XL; }
-      if (ld.props._origResistance) compResults[ld.id].trueResistance = ld.props._origResistance;
-      // Apply back-EMF: motor generates counter-voltage when spinning
-      // At running speed, effective voltage = V × (1 - backEMF)
-      if (ld.props._emfReduction && ld.props._emfReduction > 0) {
-        const emfFactor = 1 - ld.props._emfReduction;
-        compResults[ld.id].current *= emfFactor;
-        compResults[ld.id].watts *= emfFactor;
-        if (compResults[ld.id].apparentPower) compResults[ld.id].apparentPower *= emfFactor;
-        if (compResults[ld.id].reactivePower) compResults[ld.id].reactivePower *= emfFactor;
-        compResults[ld.id]._backEMF = ld.props._emfReduction;
-        compResults[ld.id]._speedFactor = ld.props._speedFactor;
-        branchCurrents[ld.id] = compResults[ld.id].current;
-        if (ld.type === 'fan') ld.props._actualWatts = compResults[ld.id].watts;
-      }
-      // Apply startup surge: multiply running current by surge factor
-      if (_surgeLookup[ld.id]) {
-        const sf = _surgeLookup[ld.id];
-        compResults[ld.id].current *= sf;
-        compResults[ld.id].watts *= sf;
-        if (compResults[ld.id].apparentPower) compResults[ld.id].apparentPower *= sf;
-        if (compResults[ld.id].reactivePower) compResults[ld.id].reactivePower *= sf;
-        compResults[ld.id]._surgeFactor = sf;
-        branchCurrents[ld.id] = compResults[ld.id].current;
-        if (ld.type === 'fan') ld.props._actualWatts = compResults[ld.id].watts;
-      }
-    }
-
-    // ── Total source current (KCL at srcNet1) ──
-    let totalCurrent = 0;
-    for (const ld of srcLoads) {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      if (n1 === srcNet1 || n2 === srcNet1) {
-        totalCurrent += compResults[ld.id].current;
-      }
-    }
-    // Fallback for series with fuse/switch between source and first load
-    if (totalCurrent < 1e-9) {
-      for (const ld of srcLoads) {
-        if (compResults[ld.id] && compResults[ld.id].current > 0) {
-          totalCurrent = Math.max(totalCurrent, compResults[ld.id].current);
-        }
-      }
-    }
-
-    const totalWatts = srcLoads.reduce((sum, ld) => sum + (compResults[ld.id] ? compResults[ld.id].watts : 0), 0);
-    const totalResistance = totalCurrent > 0 ? voltage / totalCurrent : Infinity;
-    branchCurrents[src.id] = totalCurrent;
-    compResults[src.id] = {
-      voltageDrop: voltage, current: totalCurrent, watts: totalWatts,
-      resistance: totalResistance,
-      overload: false
-    };
-
-    // ── Mark node voltages for wire rendering ──
-    for (const k of Object.keys(parent)) {
-      const net = find(k);
-      if (net === srcNet2) nodeVoltages[k] = 0;
-      else if (ni[net] !== undefined) nodeVoltages[k] = Vn[ni[net]];
-    }
-    nodeVoltages[key(src.gx1, src.gy1)] = voltage;
-    nodeVoltages[key(src.gx2, src.gy2)] = 0;
-    // Fill any remaining wire nodes
-    for (const w of wires) {
-      for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
-        if (nodeVoltages[k] === undefined) {
-          const net = find(k);
-          if (net === srcNet2) nodeVoltages[k] = 0;
-          else if (ni[net] !== undefined) nodeVoltages[k] = Vn[ni[net]];
-        }
-      }
-    }
-    // 240V split-phase: shift reference so L1=+120V, L2=-120V (each leg 120V to ground)
-    if (src.type === 'ac_240') {
-      const shift = voltage / 2;
-      for (const k of Object.keys(nodeVoltages)) {
-        if (nodeVoltages[k] === undefined) continue;
-        const net = find(k);
-        if (net === srcNet1 || net === srcNet2) nodeVoltages[k] -= shift;
-      }
-    }
-
-    // ── Fuse and Switch: find current through zero-resistance components ──
-    // Since fuses/switches are merged into nets, find the current flowing
-    // through their net by summing load currents on connected loads.
-    for (const c of components) {
-      if (((c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') && !c.props.blown) || ((c.type === 'switch' || c.type === 'time_delay') && c.props.closed) || ((c.type === 'contactor_contact' || c.type === 'relay_contact') && c.props.contactClosed) || (c.type === 'breaker' && !c.props.tripped)) {
-        const cNet = find(key(c.gx1, c.gy1));
-        if (nodeVoltages[key(c.gx1, c.gy1)] === undefined) continue;
-
-        // Find loads that have a terminal on this component's net
-        // and sum their currents. If the component is on the main trunk
-        // (srcNet1 or srcNet2), use total current.
-        let currentThrough = 0;
-        if (cNet === srcNet1 || cNet === srcNet2) {
-          currentThrough = totalCurrent;
-        } else {
-          for (const ld of srcLoads) {
-            if (!compResults[ld.id]) continue;
-            const ln1 = find(key(ld.gx1, ld.gy1));
-            const ln2 = find(key(ld.gx2, ld.gy2));
-            if (ln1 === cNet || ln2 === cNet) {
-              currentThrough = Math.max(currentThrough, compResults[ld.id].current);
-            }
-          }
-        }
-        if (currentThrough === 0) currentThrough = totalCurrent;
-
-        compResults[c.id] = { voltageDrop: 0, current: currentThrough, watts: 0, resistance: 0 };
-        branchCurrents[c.id] = currentThrough;
-
-        // Blow fuse if over-current
-        if ((c.type === 'fuse' || c.type === 'lv_fuse') && currentThrough > c.props.ratedAmps) {
-          c.props.blown = true;
-          autoSave();
-          solveCircuit();
-          return;
-        }
-        // Time delay fuse: instant blow at ≥10× rated, delayed blow for moderate overcurrent
-        if (c.type === 'td_fuse' && currentThrough > c.props.ratedAmps) {
-          if (currentThrough >= c.props.ratedAmps * 10) {
-            // Extreme overcurrent — blow instantly
-            c.props.blown = true;
-            autoSave();
-            solveCircuit();
-            return;
-          }
-          // Moderate overcurrent — start/continue delay timer
-          if (!c.props._ocStartTime) c.props._ocStartTime = animTime;
-          if (animTime - c.props._ocStartTime >= c.props.delaySeconds) {
-            c.props.blown = true;
-            c.props._ocStartTime = null;
-            autoSave();
-            solveCircuit();
-            return;
-          }
-        } else if (c.type === 'td_fuse') {
-          // Current within rating — reset timer
-          c.props._ocStartTime = null;
-        }
-        // Trip breaker if over-current (with time delay for moderate overcurrent)
-        if (c.type === 'breaker' && currentThrough > c.props.ratedAmps) {
-          if (currentThrough >= c.props.ratedAmps * 10) {
-            // Extreme overcurrent — trip instantly
-            c.props.tripped = true;
-            autoSave();
-            solveCircuit();
-            return;
-          }
-          // Moderate overcurrent — start/continue delay timer
-          if (!c.props._ocStartTime) c.props._ocStartTime = animTime;
-          if (animTime - c.props._ocStartTime >= c.props.delaySeconds) {
-            c.props.tripped = true;
-            c.props._ocStartTime = null;
-            autoSave();
-            solveCircuit();
-            return;
-          }
-        } else if (c.type === 'breaker') {
-          // Current within rating — reset timer
-          c.props._ocStartTime = null;
-        }
-      }
-    }
-  }
-
-  // ── Aggregate 3-phase source results ──
-  // For ac_480, merge results from virtual pairings into the original component
-  for (const src of sources) {
-    if (src.type === 'ac_480' && src.gx3 !== undefined) {
-      const r12 = compResults[src.id] || {};
-      const r23 = compResults[src.id + '_23'] || {};
-      const r13 = compResults[src.id + '_13'] || {};
-      compResults[src.id] = {
-        voltageDrop: src.props.voltage,
-        current: (r12.current || 0) + (r23.current || 0) + (r13.current || 0),
-        watts: (r12.watts || 0) + (r23.watts || 0) + (r13.watts || 0),
-        resistance: 0,
-        overload: r12.overload || r23.overload || r13.overload || false,
-        shortCircuit: r12.shortCircuit || r23.shortCircuit || r13.shortCircuit || false
-      };
-      branchCurrents[src.id] = compResults[src.id].current;
+      // Delta source as its wye equivalent behind impedance: three phase windings
+      // to an INTERNAL neutral that is not brought out to a terminal — which is
+      // exactly what a delta source is. Each winding carries V/√3, so the
+      // line-to-line voltage the network computes comes out at V, and the 30°
+      // shift between line-to-line and line-to-neutral appears on its own.
+      const n3 = find(key(src.gx3, src.gy3));
+      const mid = src.id + ':wye';
+      const phaseV = V / Math.sqrt(3);
+      [n1, n2, n3].forEach((nk, i) => put(nk, mid, emf(phaseV, PHASE_ANGLES[i]), ':p' + i));
+      return;
     }
     if (src.type === 'ac_480_wye' && src.gx4 !== undefined) {
-      const r12 = compResults[src.id] || {};
-      const r23 = compResults[src.id + '_23'] || {};
-      const r13 = compResults[src.id + '_13'] || {};
-      const r1n = compResults[src.id + '_1n'] || {};
-      const r2n = compResults[src.id + '_2n'] || {};
-      const r3n = compResults[src.id + '_3n'] || {};
-      compResults[src.id] = {
-        voltageDrop: src.props.voltage,
-        current: (r12.current||0) + (r23.current||0) + (r13.current||0) + (r1n.current||0) + (r2n.current||0) + (r3n.current||0),
-        watts: (r12.watts||0) + (r23.watts||0) + (r13.watts||0) + (r1n.watts||0) + (r2n.watts||0) + (r3n.watts||0),
-        resistance: 0,
-        overload: r12.overload || r23.overload || r13.overload || r1n.overload || r2n.overload || r3n.overload || false,
-        shortCircuit: r12.shortCircuit || r23.shortCircuit || r13.shortCircuit || r1n.shortCircuit || r2n.shortCircuit || r3n.shortCircuit || false
-      };
-      branchCurrents[src.id] = compResults[src.id].current;
+      // Wye source: the neutral IS a terminal, so neutral current is a real branch
+      // current the solve produces.
+      const n3 = find(key(src.gx3, src.gy3));
+      const n4 = find(key(src.gx4, src.gy4));
+      const phaseV = V / Math.sqrt(3);
+      [n1, n2, n3].forEach((nk, i) => put(nk, n4, emf(phaseV, PHASE_ANGLES[i]), ':p' + i));
+      return;
+    }
+    if (src.type === 'ac_240') {
+      // Split phase, modelled as what it physically is: a centre-tapped winding.
+      // Two half-sources in series about an internal centre tap, 180° apart, so
+      // L1-L2 is the full 240 V and each leg is half that from the centre. The
+      // centre tap is internal — this component brings out no neutral terminal.
+      const mid = src.id + ':ct';
+      put(n1, mid, emf(V / 2, 0), ':a');
+      put(mid, n2, emf(V / 2, 0), ':b');
+      return;
+    }
+    // Everything else is a plain two-terminal source at 0°: 120 V AC, the legacy
+    // AC source, and DC (where ω = 0 makes the phasor a real number).
+    put(n1, n2, emf(V, 0), '');
+  }
+
+  // ── Stamp the passive network ──
+  // Loads carry R, L and C separately so the phasor form is exact; the scalar
+  // impedance the older code folded into `resistance` is only kept for display.
+  function stampLoads(net, w, only) {
+    for (const ld of loads) {
+      const a = find(key(ld.gx1, ld.gy1));
+      const b = find(key(ld.gx2, ld.gy2));
+      if (a === b) continue;                       // shorted out by the topology
+      if (only && !(only.has(a) && only.has(b))) continue;
+      let Y;
+      if (ld.type === 'capacitor') {
+        const orig = compById.get(ld.id);
+        const C = (orig ? effectiveCapacitance(orig) : (ld.props.capacitance || 0)) * 1e-6;
+        if (!(C > 0)) continue;                    // open or shorted cap: no branch
+        Y = admittanceOf(0, 0, C, w);
+        if (Cx.abs(Y) < 1e-15) continue;           // blocks DC outright
+      } else {
+        const R = (ld.props._origResistance != null) ? ld.props._origResistance : ld.props.resistance;
+        const L = (ld.props._effectiveL != null) ? ld.props._effectiveL : (ld.props.inductance || 0);
+        if (!(R > 0) && !(L > 0)) continue;
+        Y = admittanceOf(R, L, 0, w);
+      }
+      // Behavioural scaling, applied as admittance so the whole network sees it.
+      let k = 1;
+      if (_surgeLookup[ld.id]) k *= _surgeLookup[ld.id];
+      if (ld.props._emfReduction > 0) k *= Math.max(0, 1 - ld.props._emfReduction);
+      if (k !== 1) Y = Cx.scale(Y, k);
+      if (!Cx.isFinite(Y) || Cx.abs(Y) < 1e-15) continue;
+      const br = { a, b, Y, J: Cx.zero(), id: ld.id, meta: { load: ld } };
+      net.branches.push(br); netNode(net, a); netNode(net, b);
+      _branchOf.set(ld.id, { br, net });
     }
   }
 
-  // ── Ensure all phase terminals of 3-phase sources have non-zero nodeVoltages ──
-  // The solver assigns one terminal per pairing as 0V reference, which can leave a hot
-  // phase leg at 0V in nodeVoltages. This breaks NCV, energized colors, and voltage reads.
-  // Set any 0V phase net to the source voltage so it registers as hot everywhere.
-  for (const src of sources) {
-    if (src.props.on === false) continue;
-    const srcV = src.props.voltage || 0;
-    const phaseTerms = [];
-    if (src.type === 'ac_480' && src.gx3 !== undefined) {
-      phaseTerms.push([src.gx1, src.gy1], [src.gx2, src.gy2], [src.gx3, src.gy3]);
-    } else if (src.type === 'ac_480_wye' && src.gx4 !== undefined) {
-      phaseTerms.push([src.gx1, src.gy1], [src.gx2, src.gy2], [src.gx3, src.gy3]);
+  // ── Stamp switching and protective devices as real branches ──
+  // These used to merge their two nodes into one net, which made their current
+  // unreadable: the old code had to guess it from surrounding loads, and a device
+  // in a parallel path was credited with nothing at all. As a branch with a small
+  // but real closed resistance, its current is simply (Va − Vb)·Y — correct in
+  // every topology, including parallel ones.
+  //
+  // CONFIG.CONTACT_RESISTANCE is ~1 mΩ, the order of a real closed contact. It is
+  // small enough to be invisible on a meter (15 mV at 15 A) and large enough to
+  // keep the matrix well conditioned.
+  function stampDevices(net, only) {
+    for (const c of components) {
+      let conducting = false, R = CONFIG.CONTACT_RESISTANCE;
+      if (isSwitchingType(c.type)) {
+        const commanded = (c.type === 'switch' || c.type === 'time_delay') ? c.props.closed : c.props.contactClosed;
+        conducting = contactConducts(c, commanded);
+        const extra = contactSeriesR(c);
+        if (extra > 0) R = extra;
+      } else if (c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') {
+        conducting = !c.props.blown;
+      } else if (c.type === 'breaker') {
+        conducting = !c.props.tripped;
+      } else continue;
+      if (!conducting) continue;
+      const a = find(key(c.gx1, c.gy1));
+      const b = find(key(c.gx2, c.gy2));
+      if (a === b) continue;                        // shorted across by wiring
+      if (only && !(only.has(a) && only.has(b))) continue;
+      const br = { a, b, Y: Cx.make(1 / R, 0), J: Cx.zero(), id: c.id, meta: { device: c } };
+      net.branches.push(br); netNode(net, a); netNode(net, b);
+      _branchOf.set(c.id, { br, net });
     }
-    for (const [gx, gy] of phaseTerms) {
-      const termNet = find(key(gx, gy));
-      if (nodeVoltages[key(gx, gy)] === 0 || !nodeVoltages[key(gx, gy)]) {
-        // Propagate srcV to all nodes in this phase net
-        for (const k of Object.keys(nodeVoltages)) {
-          if (find(k) === termNet) nodeVoltages[k] = srcV;
-        }
+  }
+
+  // ── Reflected transformer load ──
+  // A transformer's primary is a real load on whatever feeds it, and until now it
+  // was not stamped into the network at all: its draw was added to the source
+  // afterwards, so the primary never sagged under its own load and the secondary
+  // EMF was derived from an unloaded primary voltage.
+  //
+  // The fix is clean because the reflected impedance is VOLTAGE-INDEPENDENT — no
+  // circular dependency, no iteration:
+  //
+  //     Z_primary = (N1/N2)² · Z_secondary_total
+  //
+  // which is the standard impedance-reflection relationship. Z_secondary_total is
+  // the winding impedance plus whatever the secondary terminals see, and that can
+  // be measured from the secondary topology alone by injecting a test current —
+  // exactly how you would measure input impedance on a bench.
+  //
+  // With the primary stamped as a genuine branch, the sag, the secondary EMF and
+  // the current in every upstream protective device all fall out of the one solve.
+  function secondaryInputImpedance(xf, w, secA, secB) {
+    const island = islandOf(secA, new Set());
+    if (!island.has(secB)) return null;              // open secondary: no return path
+    const probe = createNetwork(w);
+    stampLoads(probe, w, island);
+    stampDevices(probe, island);
+    if (!probe.nodes.has(secA) || !probe.nodes.has(secB)) return null;
+    // A 1 A test injection: a branch with zero admittance still contributes its
+    // Norton current to the right-hand side, so this is an ideal current source.
+    addBranch(probe, secA, secB, Cx.zero(), Cx.make(1, 0), null, null);
+    const res = solveNetwork(probe, secB);
+    if (!res.ok) return null;                        // nothing for the current to flow through
+    const V = res.voltages.get(secA);
+    return (V && Cx.isFinite(V)) ? V : null;         // Z = V / 1 A
+  }
+
+  function reflectedPrimaryImpedance(xf, w) {
+    const Vp = xf.props.primaryVoltage, Vsn = xf.props.secondaryVoltage;
+    if (!(Vp > 0) || !(Vsn > 0)) return null;
+    const fm = faultOf(xf);
+    if (fm === 'open-primary' || fm === 'open-secondary') return null;
+    const secA = find(key(xf.gx3, xf.gy3));
+    const secB = find(key(xf.gx4, xf.gy4));
+    // Winding impedance from the nameplate, the same percent-impedance figure the
+    // secondary solve uses.
+    const vaRating = (xf.props.vaRating > 0) ? xf.props.vaRating : 40;
+    const secRatedA = vaRating / Vsn;
+    const secZ = (Vsn / secRatedA) * 0.05;
+    const shortWinding = fm === 'short-secondary';
+    const wz = shortWinding
+      ? Math.max(secZ * FAULT_MODEL.WINDING_SHORT_FRACTION, CONFIG.MIN_RESISTANCE)
+      : secZ;
+    let Ztot;
+    if (secA === secB || shortWinding) {
+      // Faulted secondary: the winding impedance and the fault itself, matching
+      // exactly what the secondary short path computes.
+      Ztot = Cx.make(wz + CONFIG.FAULT_RESISTANCE, 0);
+    } else {
+      const Zin = secondaryInputImpedance(xf, w, secA, secB);
+      if (!Zin) return null;                          // unloaded secondary: no reflected load
+      Ztot = Cx.add(Cx.make(wz + CONFIG.MIN_RESISTANCE, 0), Zin);
+    }
+    const turns = Vp / Vsn;
+    return Cx.scale(Ztot, turns * turns);
+  }
+
+  // ── Partition the board into galvanically-connected islands ──
+  // Two circuits that share no conductor are two independent problems, and may run
+  // at different frequencies. Solving them separately is both correct and what
+  // keeps an unpowered corner of the board from making the whole matrix singular.
+  const _adjacency = new Map();
+  const _touch = (a, b) => {
+    if (!_adjacency.has(a)) _adjacency.set(a, new Set());
+    if (!_adjacency.has(b)) _adjacency.set(b, new Set());
+    _adjacency.get(a).add(b); _adjacency.get(b).add(a);
+  };
+  {
+    const probe = createNetwork(0);
+    stampLoads(probe, 2 * Math.PI * (_acFreq || 60));
+    stampDevices(probe);
+    for (const br of probe.branches) _touch(br.a, br.b);
+    for (const src of sources) {
+      const terms = sourceTerminals(src);
+      for (let i = 1; i < terms.length; i++) _touch(terms[0], terms[i]);
+    }
+    // A transformer primary is a load on its island. Only the primary pair is
+    // joined — primary and secondary are galvanically isolated and must stay in
+    // separate islands, which is what lets them be solved independently.
+    for (const c of components) {
+      if (c.type !== 'transformer' || c.gx3 === undefined) continue;
+      _touch(find(key(c.gx1, c.gy1)), find(key(c.gx2, c.gy2)));
+    }
+    _branchOf.clear();
+  }
+  function islandOf(startKey, seen) {
+    const island = new Set([startKey]);
+    const q = [startKey];
+    seen.add(startKey);
+    while (q.length) {
+      const nk = q.shift();
+      for (const nb of (_adjacency.get(nk) || [])) {
+        if (island.has(nb)) continue;
+        island.add(nb); seen.add(nb); q.push(nb);
+      }
+    }
+    return island;
+  }
+
+  const _islands = [];
+  {
+    const seen = new Set();
+    for (const src of sources) {
+      for (const t of sourceTerminals(src)) {
+        if (seen.has(t)) continue;
+        _islands.push(islandOf(t, seen));
       }
     }
   }
 
-  // ── Transformer solver: treat secondary as virtual voltage source ──
+  // ── Solve each island ──
+  const _solvedVoltages = new Map();        // net root → complex voltage
+  let _anySolveFailure = null;
+
+  for (const island of _islands) {
+    const inSrcs = sources.filter(s => sourceTerminals(s).some(t => island.has(t)));
+    if (inSrcs.length === 0) continue;
+
+    // Frequency: every AC source in one island must agree, and AC cannot share an
+    // island with DC. Both cases are reported rather than forced.
+    const freqs = new Set(inSrcs.map(_srcFreqOf));
+    if (freqs.size > 1) {
+      TBProtection.record({
+        class: FaultClass.INVALID_SOURCE, severity: FaultSeverity.CRITICAL,
+        componentId: inSrcs[0].id,
+        reason: freqs.has(0)
+          ? 'an AC source and a DC source are tied to the same conductors — they cannot share one steady state'
+          : 'sources of different frequencies are tied to the same conductors',
+        action: freqs.has(0)
+          ? 'Invalid source connection — AC and DC sources cannot share a circuit'
+          : 'Invalid source connection — mismatched frequencies'
+      });
+      continue;
+    }
+    const freq = freqs.values().next().value;
+    const w = 2 * Math.PI * freq;
+
+    // Only this island's branches. Stamping the whole board would drag in nodes
+    // from other islands that have no path to this reference, which makes the
+    // matrix singular for a circuit that is perfectly well defined.
+    const net = createNetwork(w);
+    stampLoads(net, w, island);
+    stampDevices(net, island);
+    // Transformer primaries in this island, as reflected impedance. Only on AC —
+    // a transformer presents nothing at ω = 0.
+    if (w > 0) {
+      for (const xf of components) {
+        if (xf.type !== 'transformer' || xf.gx3 === undefined) continue;
+        const pA = find(key(xf.gx1, xf.gy1)), pB = find(key(xf.gx2, xf.gy2));
+        if (pA === pB || !island.has(pA) || !island.has(pB)) continue;
+        const Zp = reflectedPrimaryImpedance(xf, w);
+        if (!Zp || !Cx.isFinite(Zp)) continue;
+        const Y = Cx.inv(Zp);
+        if (!Cx.isFinite(Y) || Cx.abs(Y) < 1e-15) continue;
+        const br = { a: pA, b: pB, Y, J: Cx.zero(), id: xf.id + ':pri', meta: { xfmrPri: xf } };
+        net.branches.push(br); netNode(net, pA); netNode(net, pB);
+        _xfmrPriBranch.set(xf.id, { br, voltages: null });
+      }
+    }
+    for (const s of inSrcs) stampSource(net, s);
+
+    // Reference node: earth if this island is bonded to it, otherwise the island's
+    // own supply reference. A meter's common lead has to sit somewhere, and an
+    // ungrounded island is only defined relative to itself.
+    let refKey = null;
+    if (net.nodes.has(EARTH_KEY)) refKey = EARTH_KEY;
+    if (refKey === null) {
+      for (const s of inSrcs) {
+        const cand = (s.type === 'ac_480_wye' && s.gx4 !== undefined)
+          ? find(key(s.gx4, s.gy4)) : find(key(s.gx2, s.gy2));
+        if (net.nodes.has(cand)) { refKey = cand; break; }
+      }
+    }
+    if (refKey === null) refKey = net._order[0];
+    if (refKey === undefined) continue;
+
+    const res = solveNetwork(net, refKey);
+    if (!res.ok) {
+      _anySolveFailure = res.reason;
+      // Report the electrical reason rather than letting non-finite values escape.
+      TBProtection.record({
+        class: FaultClass.UNSOLVABLE, severity: FaultSeverity.CRITICAL,
+        componentId: inSrcs[0].id,
+        reason: res.reason,
+        action: 'Circuit cannot be solved — ' + res.reason
+      });
+      continue;
+    }
+    for (const [k, v] of res.voltages) _solvedVoltages.set(k, v);
+
+    // ── Read results back off the solved network ──
+    for (const br of net.branches) {
+      if (!br.id) continue;
+      if (br.meta && br.meta.xfmrPri) {
+        // The transformer block reads this back as its true primary current.
+        const rec = _xfmrPriBranch.get(br.meta.xfmrPri.id);
+        if (rec) rec.voltages = res.voltages;
+        continue;
+      }
+      const I = branchCurrent(br, res.voltages);
+      const P = branchPower(br, res.voltages);
+      const Va = res.voltages.get(br.a) || Cx.zero();
+      const Vb = res.voltages.get(br.b) || Cx.zero();
+      const vDrop = Cx.abs(Cx.sub(Va, Vb));
+      const iMag = Cx.abs(I);
+
+      if (br.meta && br.meta.device) {
+        const c = br.meta.device;
+        compResults[c.id] = {
+          voltageDrop: vDrop, current: iMag, watts: Math.abs(P.real),
+          resistance: iMag > 1e-12 ? vDrop / iMag : 0,
+          _phasorI: I
+        };
+        branchCurrents[c.id] = iMag;
+        // Protection reads the ACTUAL branch current now — no attribution guess.
+        recordDeviceCurrent(c, iMag);
+        continue;
+      }
+      if (br.meta && br.meta.load) {
+        const ld = br.meta.load;
+        const Zmag = iMag > 1e-12 ? vDrop / iMag : Infinity;
+        const cr = {
+          voltageDrop: vDrop, current: iMag,
+          watts: P.real,
+          resistance: (ld.props._origResistance != null) ? ld.props._origResistance : ld.props.resistance,
+          _phasorV: Cx.sub(Va, Vb), _phasorI: I
+        };
+        // Power factor, reactive power and phase angle are now SOLVED rather than
+        // carried as per-component constants.
+        if (Math.abs(P.powerFactor) < 0.9999 && P.apparent > 1e-9) {
+          cr.apparentPower = P.apparent;
+          cr.reactivePower = Math.abs(P.reactive);
+          cr.powerFactor = Math.abs(P.powerFactor);
+          cr.phaseAngle = Math.abs(P.phaseAngle) * (180 / Math.PI);
+        }
+        if (isFinite(Zmag) && ld.props._effectiveL > 0) {
+          cr.impedance = Zmag;
+          cr.reactance = w * ld.props._effectiveL;
+        }
+        if (ld.type === 'capacitor') { cr.impedance = Zmag; cr.reactance = Zmag; }
+        if (ld.props._origResistance != null) cr.trueResistance = ld.props._origResistance;
+        compResults[ld.id] = cr;
+        branchCurrents[ld.id] = iMag;
+        if (ld.type === 'bulb' || ld.type === 'fan') ld.props._actualWatts = P.real;
+      }
+    }
+
+    // ── Source terminal results ──
+    for (const s of inSrcs) {
+      let total = Cx.zero();
+      let vTerm = 0;
+      let maxPhase = 0, realPower = 0;
+      for (const br of net.branches) {
+        if (!(br.meta && br.meta.source === s.id)) continue;
+        const Ib = branchCurrent(br, res.voltages);
+        total = Cx.add(total, Ib);
+        maxPhase = Math.max(maxPhase, Cx.abs(Ib));
+        realPower += Math.abs(branchPower(br, res.voltages).real);
+      }
+      const n1 = find(key(s.gx1, s.gy1));
+      const n2 = find(key(s.gx2, s.gy2));
+      const V1 = res.voltages.get(n1) || Cx.zero();
+      const V2 = res.voltages.get(n2) || Cx.zero();
+      vTerm = Cx.abs(Cx.sub(V1, V2));
+      // For a two-terminal source the phasor sum IS the delivered current. For a
+      // three-phase source it is not: three balanced winding currents sum to zero
+      // at the star point, so reporting the sum showed a perfectly healthy 480 V
+      // supply as delivering 0 A and 0 W. What a three-phase source is actually
+      // doing is per-phase, so report the busiest conductor — the number a clamp
+      // reads — and the real power summed across the windings.
+      const threePhase = s.gx3 !== undefined;
+      const iMag = threePhase ? maxPhase : Cx.abs(total);
+      compResults[s.id] = {
+        voltageDrop: vTerm, current: iMag,
+        watts: threePhase ? realPower : vTerm * iMag,
+        resistance: iMag > 1e-9 ? vTerm / iMag : Infinity,
+        sourceImpedance: sourceInternalR(s),
+        availableFault: sourceFaultCurrent(s),
+        nominalVoltage: s.props.voltage,
+        sag: (s.props.voltage || 0) - vTerm,
+        overload: false
+      };
+      branchCurrents[s.id] = iMag;
+      classifySourceLoading(s, iMag);
+
+      // Per-phase currents, for three-phase protection and per-conductor metering.
+      if (s.gx3 !== undefined) {
+        const per = [];
+        for (let i = 0; i < 3; i++) {
+          const br = net.branches.find(b => b.id === s.id + ':p' + i);
+          per.push(br ? Cx.abs(branchCurrent(br, res.voltages)) : 0);
+        }
+        compResults[s.id].phaseCurrents = per;
+        // Neutral current on a wye source is a real branch quantity: the phasor sum
+        // of the three phase currents. Balanced load → near zero. Unbalanced → not.
+        if (s.type === 'ac_480_wye' && s.gx4 !== undefined) {
+          let nSum = Cx.zero();
+          for (let i = 0; i < 3; i++) {
+            const br = net.branches.find(b => b.id === s.id + ':p' + i);
+            if (br) nSum = Cx.add(nSum, branchCurrent(br, res.voltages));
+          }
+          compResults[s.id].neutralCurrent = Cx.abs(nSum);
+        }
+        const maxI = Math.max.apply(null, per), minI = Math.min.apply(null, per);
+        compResults[s.id].imbalance = maxI > 1e-9 ? (maxI - minI) / maxI : 0;
+      }
+    }
+  }
+
+  // Tag the motor results with what was applied, for the data boxes and the
+  // protection classifier. The electrical effect is already in the solve.
+  for (const ld of loads) {
+    const cr = compResults[ld.id];
+    if (!cr) continue;
+    if (_surgeLookup[ld.id]) cr._surgeFactor = _surgeLookup[ld.id];
+    if (ld.props._emfReduction > 0) {
+      cr._backEMF = ld.props._emfReduction;
+      cr._speedFactor = ld.props._speedFactor;
+    }
+  }
+
+  // ── Publish node voltages ──
+  // `nodeVoltages` stays a real scalar because the renderer, the NCV tester and
+  // the wire animation all read it as one: RMS magnitude on AC, signed value on
+  // DC so polarity still means something. The full complex value lives alongside
+  // in `nodePhasors` for anything that needs an angle.
+  const _dcIsland = new Set();
+  for (const island of _islands) {
+    const inSrcs = sources.filter(s => sourceTerminals(s).some(t => island.has(t)));
+    if (inSrcs.length && inSrcs.every(s => s.type === 'dc_source')) {
+      for (const k of island) _dcIsland.add(k);
+    }
+  }
+  for (const k of Object.keys(parent)) {
+    const root = find(k);
+    const v = _solvedVoltages.get(root);
+    if (v === undefined) continue;
+    nodeVoltages[k] = _dcIsland.has(root) ? v.re : Cx.abs(v);
+    nodePhasors[k] = v;
+  }
+  for (const w of wires) {
+    for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
+      if (nodeVoltages[k] !== undefined) continue;
+      const root = find(k);
+      const v = _solvedVoltages.get(root);
+      if (v === undefined) continue;
+      nodeVoltages[k] = _dcIsland.has(root) ? v.re : Cx.abs(v);
+      nodePhasors[k] = v;
+    }
+  }
+  window._nodePhasors = nodePhasors;
+
+  // ── Bolted fault directly across a two-terminal source ──
+  // A source whose own two terminals have been wired together is ONE node, so its
+  // branch is degenerate and the network has nothing to stamp. That is the only
+  // case needing special handling, and it only arises for a genuinely two-terminal
+  // source.
+  //
+  // It deliberately does NOT cover three-phase sources. Their windings run from
+  // each line to an internal neutral that no wiring can reach, so a line-to-line
+  // fault leaves both branches perfectly well formed and the network solves it
+  // correctly — including the per-phase currents. Treating that as a degenerate
+  // short overwrote a correct solve with a scalar guess: a bolted L1-L2 fault on a
+  // 480 V delta reported 9057 A instead of the correct 5000 A, and left L2 reading
+  // zero. Independent hand calculation caught it.
+  //
+  // Nor does it cover the split-phase source, whose two half-windings meet at an
+  // internal centre tap and stay solvable for the same reason.
+  //
+  // The fault path here is WIRE, so the only thing limiting the current is the
+  // source's own impedance — which is exactly what "available fault current"
+  // means. CONFIG.FAULT_RESISTANCE is not added: it models a fault that has some
+  // impedance of its own (an internal winding short), not a conductor. The
+  // network path applies the same rule, so both agree.
+  for (const src of sources) {
+    if (src.gx3 !== undefined || src.type === 'ac_240') continue;
+    const a = find(key(src.gx1, src.gy1));
+    const b = find(key(src.gx2, src.gy2));
+    if (a !== b) continue;
+    const V = src.props.voltage || 0;
+    const Rs = sourceInternalR(src);
+    const Isc = V / Rs;
+    const faultV = 0;   // a wire short collapses the conductor to the return
+    compResults[src.id] = {
+      voltageDrop: faultV, current: Isc, watts: V * Isc,
+      resistance: Rs,
+      sourceImpedance: Rs, availableFault: sourceFaultCurrent(src),
+      overload: true, shortCircuit: true
+    };
+    branchCurrents[src.id] = Isc;
+    _shortedSources.set(src.id, Isc);
+    classifySourceLoading(src, Isc);
+    for (const c of components) {
+      if (!isProtectiveDevice(c) || deviceIsOpen(c)) continue;
+      const n1 = find(key(c.gx1, c.gy1)), n2 = find(key(c.gx2, c.gy2));
+      if (n1 === a || n2 === a || n1 === b || n2 === b) {
+        compResults[c.id] = { voltageDrop: 0, current: Isc, watts: 0, resistance: 0 };
+        branchCurrents[c.id] = Isc;
+        recordDeviceCurrent(c, Isc);
+      }
+    }
+    for (const k of Object.keys(parent)) {
+      if (find(k) === a || find(k) === b) { nodeVoltages[k] = faultV; nodePhasors[k] = Cx.make(faultV, 0); }
+    }
+  }
+  // The transformer's primary current, as the network solved it. Falls back to the
+  // ampere-turn estimate only when the primary was not stamped (a secondary with
+  // nothing on it, or a DC island).
+  function solvedPrimaryCurrent(xfmr, fallback) {
+    const rec = _xfmrPriBranch.get(xfmr.id);
+    if (!rec || !rec.voltages) return fallback;
+    const I = Cx.abs(branchCurrent(rec.br, rec.voltages));
+    return isFinite(I) ? I : fallback;
+  }
+
+  // ── Transformer solver ──
+  // The secondary is solved as its own phasor island, driven by an EMF derived
+  // from the SOLVED primary voltage rather than from a topological guess about
+  // which source the primary is wired to. That matters now that fuses, breakers
+  // and contacts are branches instead of net merges: the primary is very rarely
+  // on the same net as a source terminal, and the old "are these the same net?"
+  // test would have said no every time.
+  //
+  // PHASE CONVENTION: the secondary EMF is the primary phasor scaled by the turns
+  // ratio, with NO phase shift — a 0° (additive-polarity) two-winding transformer.
+  // Real transformers can introduce a shift depending on winding configuration
+  // (a delta-wye bank gives 30°); this model represents the single-phase control
+  // transformer the simulator is built around, where in-phase is correct.
+  //
+  // Not modelled, deliberately: magnetising current, core loss, saturation, and
+  // any inrush on energization. The winding impedance below is the only
+  // non-ideality, and it exists to make fault current finite.
   const transformers = components.filter(c => c.type === 'transformer' && c.gx3 !== undefined);
   for (const xfmr of transformers) {
     const priNet1 = find(key(xfmr.gx1, xfmr.gy1));
     const priNet2 = find(key(xfmr.gx2, xfmr.gy2));
     const secNet1 = find(key(xfmr.gx3, xfmr.gy3));
     const secNet2 = find(key(xfmr.gx4, xfmr.gy4));
+    const xfmrFault = faultOf(xfmr);
 
-    // Verify BOTH primary terminals are connected to a source (complete primary circuit)
-    // Primary needs L1 connected to one source terminal AND N connected to the other
-    let priHasCompleteCircuit = false;
-    let priVoltage = 0;
-    for (const src of sources) {
-      const sNet1 = find(key(src.gx1, src.gy1)); // L1 side of source
-      const sNet2 = find(key(src.gx2, src.gy2)); // N side of source
-      // Check if transformer primary terminals connect to BOTH source terminals
-      if ((priNet1 === sNet1 && priNet2 === sNet2) || (priNet1 === sNet2 && priNet2 === sNet1)) {
-        priHasCompleteCircuit = true;
-        priVoltage = src.props.voltage;
-        break;
-      }
+    // What is actually across the primary, from the solved network.
+    const Vp1 = _solvedVoltages.get(priNet1);
+    const Vp2 = _solvedVoltages.get(priNet2);
+    const priPhasor = (Vp1 && Vp2) ? Cx.sub(Vp1, Vp2) : null;
+    const priVoltage = priPhasor ? Cx.abs(priPhasor) : 0;
+    const priSourceIsDC = _dcIsland.has(priNet1) || _dcIsland.has(priNet2);
+
+    // ── Open windings ──
+    if (xfmrFault === 'open-primary' || xfmrFault === 'open-secondary') {
+      compResults[xfmr.id] = {
+        voltageDrop: xfmrFault === 'open-primary' ? 0 : priVoltage,
+        current: 0, watts: 0, resistance: Infinity,
+        secVoltage: 0, secCurrent: 0, secWatts: 0,
+        _openWinding: xfmrFault === 'open-primary' ? 'primary' : 'secondary'
+      };
+      branchCurrents[xfmr.id] = 0;
+      TBProtection.record({
+        class: FaultClass.OPEN_CIRCUIT, severity: FaultSeverity.WARNING, componentId: xfmr.id,
+        conductor: xfmrFault === 'open-primary' ? 'primary' : 'secondary',
+        reason: `${xfmrFault === 'open-primary' ? 'primary' : 'secondary'} winding is open`,
+        action: `Transformer ${xfmrFault === 'open-primary' ? 'primary' : 'secondary'} winding open`
+      });
+      continue;
     }
 
-    // Check if primary is fed by DC — transformers require AC (changing magnetic flux)
-    let priSourceIsDC = false;
-    for (const src of sources) {
-      if (src.type !== 'dc_source') continue;
-      const sNet1 = find(key(src.gx1, src.gy1));
-      const sNet2 = find(key(src.gx2, src.gy2));
-      if ((priNet1 === sNet1 && priNet2 === sNet2) || (priNet1 === sNet2 && priNet2 === sNet1)) {
-        priSourceIsDC = true;
-        break;
-      }
-    }
-
-    if (priSourceIsDC || !priHasCompleteCircuit || priVoltage < 0.01 || secNet1 === secNet2) {
-      // DC source: transformer cannot induce voltage (no changing flux)
-      // Also handles: no complete primary circuit or secondary shorted
+    if (priSourceIsDC || priVoltage < 0.01) {
+      // A transformer needs changing flux. On DC — or with nothing across the
+      // primary — it induces nothing at all.
       compResults[xfmr.id] = {
         voltageDrop: priSourceIsDC ? priVoltage : 0, current: 0, watts: 0, resistance: Infinity,
         secVoltage: 0, secCurrent: 0, secWatts: 0,
         _dcBlocked: priSourceIsDC
       };
+      branchCurrents[xfmr.id] = 0;
       continue;
     }
 
-    // Calculate secondary voltage using turns ratio
     const ratio = xfmr.props.secondaryVoltage / xfmr.props.primaryVoltage;
-    const secVoltage = priVoltage * ratio;
+    const secEMF = Cx.scale(priPhasor, ratio);
+    const secVoltage = Cx.abs(secEMF);
 
-    // Find loads reachable from secondary terminals (BFS through loads)
-    const secReachFromT1 = new Set([secNet1]);
-    const sq1 = [secNet1];
-    while (sq1.length > 0) {
-      const net = sq1.shift();
-      for (const ld of loads) {
-        const n1 = find(key(ld.gx1, ld.gy1));
-        const n2 = find(key(ld.gx2, ld.gy2));
-        if (n1 === n2 || ld.props.resistance <= 0) continue;
-        if (n1 === net && !secReachFromT1.has(n2)) { secReachFromT1.add(n2); sq1.push(n2); }
-        if (n2 === net && !secReachFromT1.has(n1)) { secReachFromT1.add(n1); sq1.push(n1); }
-      }
-    }
-    const secReachFromT2 = new Set([secNet2]);
-    const sq2 = [secNet2];
-    while (sq2.length > 0) {
-      const net = sq2.shift();
-      for (const ld of loads) {
-        const n1 = find(key(ld.gx1, ld.gy1));
-        const n2 = find(key(ld.gx2, ld.gy2));
-        if (n1 === n2 || ld.props.resistance <= 0) continue;
-        if (n1 === net && !secReachFromT2.has(n2)) { secReachFromT2.add(n2); sq2.push(n2); }
-        if (n2 === net && !secReachFromT2.has(n1)) { secReachFromT2.add(n1); sq2.push(n1); }
-      }
-    }
+    // Winding impedance from the nameplate — see the percent-impedance note in the
+    // README. This is what limits fault current on the secondary.
+    // Winding impedance and rated current are NAMEPLATE properties, fixed by the
+    // transformer's construction. Deriving them from the solved secondary voltage
+    // made %Z shrink whenever the supply sagged — so a loaded transformer quietly
+    // reported a lower fault impedance and a higher fault current than its own
+    // nameplate allows. Independent benchmarking caught it once the primary began
+    // sagging for real.
+    const vaRating   = (xfmr.props.vaRating > 0) ? xfmr.props.vaRating : 40;
+    const secNominal = xfmr.props.secondaryVoltage > 0 ? xfmr.props.secondaryVoltage : secVoltage;
+    const secRatedA  = secNominal > 0 ? vaRating / secNominal : 0;
+    const secZ       = secRatedA > 0 ? (secNominal / secRatedA) * 0.05 : CONFIG.MIN_RESISTANCE;
+    const shortedSecWinding = xfmrFault === 'short-secondary';
+    const faultZ = shortedSecWinding
+      ? Math.max(secZ * FAULT_MODEL.WINDING_SHORT_FRACTION, CONFIG.MIN_RESISTANCE)
+      : secZ;
 
-    const secLoads = loads.filter(ld => {
-      if (compResults[ld.id]) return false; // already solved by a source
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      if (n1 === n2 || ld.props.resistance <= 0) return false;
-      return (secReachFromT1.has(n1) && secReachFromT2.has(n2)) ||
-             (secReachFromT1.has(n2) && secReachFromT2.has(n1));
-    });
-
-    if (secLoads.length === 0) {
-      // No secondary loads — open secondary, no current
+    // ── Secondary bolted short, internal or external ──
+    if (secNet1 === secNet2 || shortedSecWinding) {
+      const secFaultI = secVoltage / (faultZ + CONFIG.FAULT_RESISTANCE);
+      const priFaultI = priVoltage > 0 ? secFaultI * (secVoltage / priVoltage) : 0;
       compResults[xfmr.id] = {
-        voltageDrop: priVoltage, current: 0, watts: 0, resistance: Infinity,
-        secVoltage: secVoltage, secCurrent: 0, secWatts: 0
+        voltageDrop: priVoltage, current: priFaultI, watts: 0,
+        resistance: priFaultI > 0 ? priVoltage / priFaultI : Infinity,
+        secVoltage: secFaultI * CONFIG.FAULT_RESISTANCE,
+        secCurrent: secFaultI, secWatts: 0,
+        secRatedCurrent: secRatedA, secImpedance: secZ,
+        vaRating, shortCircuit: true, overload: true,
+        _shortedWinding: shortedSecWinding ? 'secondary' : null
       };
-      // Set secondary node voltages — propagate to ALL nodes in each secondary net
-      nodeVoltages[key(xfmr.gx3, xfmr.gy3)] = secVoltage;
-      nodeVoltages[key(xfmr.gx4, xfmr.gy4)] = 0;
-      for (const k of Object.keys(parent)) {
-        const net = find(k);
-        if (net === secNet1) nodeVoltages[k] = secVoltage;
-        else if (net === secNet2) nodeVoltages[k] = 0;
-      }
-      for (const w of wires) {
-        for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
-          const net = find(k);
-          if (net === secNet1) nodeVoltages[k] = secVoltage;
-          else if (net === secNet2) nodeVoltages[k] = 0;
+      compResults[xfmr.id].current = solvedPrimaryCurrent(xfmr, priFaultI);
+      branchCurrents[xfmr.id] = compResults[xfmr.id].current;
+      TBProtection.record({
+        class: FaultClass.SHORT_CIRCUIT, severity: FaultSeverity.CRITICAL,
+        componentId: xfmr.id, conductor: 'secondary',
+        measured: { current: secFaultI, voltage: 0 }, threshold: { rating: secRatedA },
+        reason: `secondary bolted short — ${secFaultI.toFixed(1)} A against a ${secRatedA.toFixed(2)} A winding`,
+        action: `Transformer secondary shorted — ${priFaultI.toFixed(2)} A reflected to the primary`
+      });
+      for (const c of components) {
+        if (!isProtectiveDevice(c) || deviceIsOpen(c)) continue;
+        const n1 = find(key(c.gx1, c.gy1)), n2 = find(key(c.gx2, c.gy2));
+        if (n1 === secNet1 || n2 === secNet1 || n1 === secNet2 || n2 === secNet2) {
+          compResults[c.id] = { voltageDrop: 0, current: secFaultI, watts: 0, resistance: 0 };
+          branchCurrents[c.id] = secFaultI;
+          recordDeviceCurrent(c, secFaultI);
         }
       }
       continue;
     }
 
-    // Nodal analysis on secondary circuit (same approach as main solver)
-    const secAllNets = new Set([secNet1, secNet2]);
-    for (const ld of secLoads) {
-      secAllNets.add(find(key(ld.gx1, ld.gy1)));
-      secAllNets.add(find(key(ld.gx2, ld.gy2)));
-    }
-    const secNetList = [...secAllNets].filter(n => n !== secNet2);
-    const sni = {};
-    secNetList.forEach((n, i) => sni[n] = i);
-    const sN = secNetList.length;
+    // ── Normal operation: solve the secondary island ──
+    const secIsland = islandOf(secNet1, new Set());
+    const secNet = createNetwork(2 * Math.PI * (_acFreq || 60));
+    stampLoads(secNet, 2 * Math.PI * (_acFreq || 60), secIsland);
+    stampDevices(secNet, secIsland);
+    const Ysec = Cx.make(1 / (faultZ + CONFIG.MIN_RESISTANCE), 0);
+    addBranch(secNet, secNet1, secNet2, Ysec, Cx.mul(secEMF, Ysec), xfmr.id + ':sec', { source: xfmr.id });
 
-    if (sN === 0) continue;
-
-    const sA = [];
-    for (let i = 0; i < sN; i++) { sA[i] = []; for (let j = 0; j <= sN; j++) sA[i][j] = 0; }
-
-    for (const ld of secLoads) {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      const g = 1 / ld.props.resistance;
-      const i1 = sni[n1], i2 = sni[n2];
-      if (i1 !== undefined) sA[i1][i1] += g;
-      if (i2 !== undefined) sA[i2][i2] += g;
-      if (i1 !== undefined && i2 !== undefined) { sA[i1][i2] -= g; sA[i2][i1] -= g; }
-    }
-
-    const ssi = sni[secNet1];
-    if (ssi === undefined) continue;
-    for (let j = 0; j < sN; j++) sA[ssi][j] = 0;
-    sA[ssi][ssi] = 1;
-    sA[ssi][sN] = secVoltage;
-
-    // Gaussian elimination
-    let singular = false;
-    for (let col = 0; col < sN; col++) {
-      let maxR = col, maxV = Math.abs(sA[col][col]);
-      for (let r = col + 1; r < sN; r++) { if (Math.abs(sA[r][col]) > maxV) { maxV = Math.abs(sA[r][col]); maxR = r; } }
-      if (Math.abs(maxV) < 1e-12) { 
-        singular = true;
-        break;
+    const secRes = solveNetwork(secNet, secNet2);
+    if (!secRes.ok) {
+      compResults[xfmr.id] = {
+        voltageDrop: priVoltage, current: 0, watts: 0, resistance: Infinity,
+        secVoltage, secCurrent: 0, secWatts: 0, secRatedCurrent: secRatedA,
+        secImpedance: secZ, vaRating
+      };
+      // An unloaded secondary is the ordinary case of "no unique solution" here:
+      // there is nothing for the solver to determine beyond the source itself.
+      nodeVoltages[key(xfmr.gx3, xfmr.gy3)] = secVoltage;
+      nodeVoltages[key(xfmr.gx4, xfmr.gy4)] = 0;
+      for (const k of Object.keys(parent)) {
+        const root = find(k);
+        if (root === secNet1) { nodeVoltages[k] = secVoltage; nodePhasors[k] = secEMF; }
+        else if (root === secNet2) { nodeVoltages[k] = 0; nodePhasors[k] = Cx.zero(); }
       }
-      if (maxR !== col) { const tmp = sA[col]; sA[col] = sA[maxR]; sA[maxR] = tmp; }
-      for (let r = col + 1; r < sN; r++) {
-        const f = sA[r][col] / sA[col][col];
-        for (let j = col; j <= sN; j++) sA[r][j] -= f * sA[col][j];
-      }
-    }
-    const sVn = new Array(sN).fill(0);
-    for (let i = sN - 1; i >= 0; i--) {
-      sVn[i] = sA[i][sN];
-      for (let j = i + 1; j < sN; j++) sVn[i] -= sA[i][j] * sVn[j];
-      sVn[i] /= sA[i][i];
-      if (!isFinite(sVn[i])) sVn[i] = 0;
+      continue;
     }
 
-    // Calculate secondary load results
-    let totalSecCurrent = 0;
-    for (const ld of secLoads) {
-      const n1 = find(key(ld.gx1, ld.gy1));
-      const n2 = find(key(ld.gx2, ld.gy2));
-      const v1 = (n1 === secNet2) ? 0 : (sni[n1] !== undefined ? sVn[sni[n1]] : 0);
-      const v2 = (n2 === secNet2) ? 0 : (sni[n2] !== undefined ? sVn[sni[n2]] : 0);
-      const vDrop = Math.abs(v1 - v2);
-      const ldI = vDrop / ld.props.resistance;
-      const S = ldI * vDrop; // apparent power (VA)
-      const pf = ld.props.powerFactor || 1.0;
-      const realP = S * pf;
-      branchCurrents[ld.id] = ldI;
-      compResults[ld.id] = { voltageDrop: vDrop, current: ldI, watts: realP, resistance: ld.props.resistance,
-        ...(pf < 1 ? { apparentPower: S, reactivePower: S * Math.sqrt(1 - pf * pf), powerFactor: pf, phaseAngle: Math.acos(pf) * (180 / Math.PI) } : {}) };
-      if (ld.type === 'bulb' || ld.type === 'fan') ld.props._actualWatts = realP;
-      if (ld.props._impedance) { compResults[ld.id].impedance = ld.props._impedance; compResults[ld.id].reactance = ld.props._XL; }
-      if (ld.props._origResistance) compResults[ld.id].trueResistance = ld.props._origResistance;
-      if (_surgeLookup[ld.id]) {
-        const sf = _surgeLookup[ld.id];
-        compResults[ld.id].current *= sf;
-        compResults[ld.id].watts *= sf;
-        if (compResults[ld.id].apparentPower) compResults[ld.id].apparentPower *= sf;
-        if (compResults[ld.id].reactivePower) compResults[ld.id].reactivePower *= sf;
-        compResults[ld.id]._surgeFactor = sf;
-        branchCurrents[ld.id] = compResults[ld.id].current;
-        if (ld.type === 'fan') ld.props._actualWatts = compResults[ld.id].watts;
-      }
-      if (n1 === secNet1 || n2 === secNet1) totalSecCurrent += ldI;
-    }
-    if (totalSecCurrent < 1e-9) {
-      for (const ld of secLoads) {
-        if (compResults[ld.id] && compResults[ld.id].current > 0)
-          totalSecCurrent = Math.max(totalSecCurrent, compResults[ld.id].current);
+    for (const [k, v] of secRes.voltages) _solvedVoltages.set(k, v);
+    let secTotal = Cx.zero();
+    for (const br of secNet.branches) {
+      if (br.meta && br.meta.source === xfmr.id) { secTotal = Cx.add(secTotal, branchCurrent(br, secRes.voltages)); continue; }
+      if (!br.id) continue;
+      const I = branchCurrent(br, secRes.voltages);
+      const Pw = branchPower(br, secRes.voltages);
+      const Va = secRes.voltages.get(br.a) || Cx.zero();
+      const Vb = secRes.voltages.get(br.b) || Cx.zero();
+      const vDrop = Cx.abs(Cx.sub(Va, Vb));
+      const iMag = Cx.abs(I);
+      if (br.meta && br.meta.device) {
+        const c = br.meta.device;
+        compResults[c.id] = { voltageDrop: vDrop, current: iMag, watts: Math.abs(Pw.real),
+          resistance: iMag > 1e-12 ? vDrop / iMag : 0, _phasorI: I };
+        branchCurrents[c.id] = iMag;
+        recordDeviceCurrent(c, iMag);
+      } else if (br.meta && br.meta.load) {
+        const ld = br.meta.load;
+        const cr = { voltageDrop: vDrop, current: iMag, watts: Pw.real,
+          resistance: (ld.props._origResistance != null) ? ld.props._origResistance : ld.props.resistance,
+          _phasorV: Cx.sub(Va, Vb), _phasorI: I };
+        if (Math.abs(Pw.powerFactor) < 0.9999 && Pw.apparent > 1e-9) {
+          cr.apparentPower = Pw.apparent;
+          cr.reactivePower = Math.abs(Pw.reactive);
+          cr.powerFactor = Math.abs(Pw.powerFactor);
+          cr.phaseAngle = Math.abs(Pw.phaseAngle) * (180 / Math.PI);
+        }
+        if (ld.props._origResistance != null) cr.trueResistance = ld.props._origResistance;
+        if (_surgeLookup[ld.id]) {
+          const sf = _surgeLookup[ld.id];
+          cr.current *= sf; cr.watts *= sf; cr._surgeFactor = sf;
+        }
+        compResults[ld.id] = cr;
+        branchCurrents[ld.id] = cr.current;
+        if (ld.type === 'bulb' || ld.type === 'fan') ld.props._actualWatts = cr.watts;
       }
     }
 
+    const totalSecCurrent = Cx.abs(secTotal);
     const secWatts = secVoltage * totalSecCurrent;
-    // Reflect power back to primary: P_pri = P_sec (ideal transformer)
     const priCurrent = priVoltage > 0 ? secWatts / priVoltage : 0;
 
     compResults[xfmr.id] = {
       voltageDrop: priVoltage, current: priCurrent, watts: secWatts,
       resistance: priCurrent > 0 ? priVoltage / priCurrent : Infinity,
-      secVoltage: secVoltage, secCurrent: totalSecCurrent, secWatts: secWatts
+      secVoltage, secCurrent: totalSecCurrent, secWatts,
+      secRatedCurrent: secRatedA, secImpedance: secZ, vaRating
     };
-    branchCurrents[xfmr.id] = priCurrent;
+    compResults[xfmr.id].current = solvedPrimaryCurrent(xfmr, priCurrent);
+    branchCurrents[xfmr.id] = compResults[xfmr.id].current;
 
-    // Update the AC source feeding this transformer to reflect the primary draw
-    const processedSources = new Set();
-    for (const src of sources) {
-      const sNet1 = find(key(src.gx1, src.gy1));
-      const sNet2 = find(key(src.gx2, src.gy2));
-      if ((priNet1 === sNet1 || priNet1 === sNet2) && (priNet2 === sNet1 || priNet2 === sNet2)) {
-        if (!processedSources.has(src.id) && compResults[src.id]) {
-          processedSources.add(src.id);
-          compResults[src.id].current += priCurrent;
-          compResults[src.id].watts += secWatts;
-          branchCurrents[src.id] = compResults[src.id].current;
-        }
-      }
+    if (secRatedA > 0 && totalSecCurrent > secRatedA * PROTECTION.NO_DAMAGE_RATIO) {
+      const heat = accumulateMotorHeat(xfmr, totalSecCurrent, secRatedA,
+                                       _solveDepth === 1 ? TBProtection.dt() : 0);
+      compResults[xfmr.id]._thermalLoad = heat;
+      TBProtection.record({
+        class: FaultClass.OVERLOAD,
+        severity: heat > 0.5 ? FaultSeverity.CRITICAL : FaultSeverity.WARNING,
+        componentId: xfmr.id, conductor: 'secondary',
+        measured: { current: totalSecCurrent }, threshold: { rating: secRatedA },
+        reason: `secondary drawing ${totalSecCurrent.toFixed(2)} A from a ${vaRating} VA winding`,
+        action: `Transformer overloaded — ${(totalSecCurrent / secRatedA * 100).toFixed(0)}% of rating`
+      });
+    } else if (secRatedA > 0) {
+      accumulateMotorHeat(xfmr, totalSecCurrent, secRatedA, _solveDepth === 1 ? TBProtection.dt() : 0);
+      compResults[xfmr.id]._thermalLoad = xfmr.props._motorHeat || 0;
     }
 
-    // Set secondary node voltages
-    nodeVoltages[key(xfmr.gx3, xfmr.gy3)] = secVoltage;
-    nodeVoltages[key(xfmr.gx4, xfmr.gy4)] = 0;
+    // Publish secondary node voltages, magnitude for display and phasor alongside.
     for (const k of Object.keys(parent)) {
-      const net = find(k);
-      if (net === secNet2) nodeVoltages[k] = 0;
-      else if (sni[net] !== undefined) nodeVoltages[k] = sVn[sni[net]];
+      const root = find(k);
+      const v = secRes.voltages.get(root);
+      if (v === undefined) continue;
+      nodeVoltages[k] = Cx.abs(v);
+      nodePhasors[k] = v;
     }
-    for (const w of wires) {
-      for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
-        if (nodeVoltages[k] === undefined) {
-          const net = find(k);
-          if (net === secNet2) nodeVoltages[k] = 0;
-          else if (sni[net] !== undefined) nodeVoltages[k] = sVn[sni[net]];
-        }
+    for (const w2 of wires) {
+      for (const k of [key(w2.gx1, w2.gy1), key(w2.gx2, w2.gy2)]) {
+        const v = secRes.voltages.get(find(k));
+        if (v === undefined) continue;
+        nodeVoltages[k] = Cx.abs(v);
+        nodePhasors[k] = v;
       }
     }
 
-    // Check fuses/breakers on secondary side
-    for (const c of components) {
-      if (((c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') && !c.props.blown) || ((c.type === 'switch' || c.type === 'time_delay') && c.props.closed) || ((c.type === 'contactor_contact' || c.type === 'relay_contact') && c.props.contactClosed) || (c.type === 'breaker' && !c.props.tripped)) {
-        const cNet = find(key(c.gx1, c.gy1));
-        if (!secReachFromT1.has(cNet) && !secReachFromT2.has(cNet)) continue;
-        if (nodeVoltages[key(c.gx1, c.gy1)] === undefined) continue;
-        // Calculate per-branch current based on loads connected to this contact's net
-        let currentThrough = 0;
-        for (const ld of secLoads) {
-          const ln1 = find(key(ld.gx1, ld.gy1));
-          const ln2 = find(key(ld.gx2, ld.gy2));
-          if (ln1 === cNet || ln2 === cNet) {
-            currentThrough = Math.max(currentThrough, compResults[ld.id].current);
-          }
-        }
-        if (currentThrough === 0) currentThrough = totalSecCurrent;
-        compResults[c.id] = { voltageDrop: 0, current: currentThrough, watts: 0, resistance: 0 };
-        branchCurrents[c.id] = currentThrough;
-        if ((c.type === 'fuse' || c.type === 'lv_fuse') && currentThrough > c.props.ratedAmps) {
-          c.props.blown = true; autoSave(); solveCircuit(); return;
-        }
-        if (c.type === 'td_fuse' && currentThrough > c.props.ratedAmps) {
-          if (currentThrough >= c.props.ratedAmps * 10) {
-            c.props.blown = true; autoSave(); solveCircuit(); return;
-          }
-          if (!c.props._ocStartTime) c.props._ocStartTime = animTime;
-          if (animTime - c.props._ocStartTime >= c.props.delaySeconds) {
-            c.props.blown = true; c.props._ocStartTime = null; autoSave(); solveCircuit(); return;
-          }
-        } else if (c.type === 'td_fuse') {
-          c.props._ocStartTime = null;
-        }
-        if (c.type === 'breaker' && currentThrough > c.props.ratedAmps) {
-          if (currentThrough >= c.props.ratedAmps * 10) {
-            c.props.tripped = true; autoSave(); solveCircuit(); return;
-          }
-          if (!c.props._ocStartTime) c.props._ocStartTime = animTime;
-          if (animTime - c.props._ocStartTime >= c.props.delaySeconds) {
-            c.props.tripped = true; c.props._ocStartTime = null; autoSave(); solveCircuit(); return;
-          }
-        } else if (c.type === 'breaker') {
-          c.props._ocStartTime = null;
-        }
-      }
-    }
   }
+
   // ── Time delay relay countdown — only when electricity is reaching it ──
   for (const c of components) {
     if (c.type !== 'time_delay') continue;
@@ -1602,7 +1910,13 @@ function solveCircuit() {
   }
   for (const contact of components) {
     if (contact.type !== 'contactor_contact') continue;
-    const shouldClose = coilGroupEnergized[contact.props.contactorGroup] || false;
+    const commanded = coilGroupEnergized[contact.props.contactorGroup] || false;
+    // What the coil is ASKING for is recorded, so the properties panel and the
+    // symbol can show that the command and the reality disagree. What the contact
+    // actually does is contactConducts()'s call — a welded contact stays closed
+    // with the coil de-energized, which is the whole hazard being taught.
+    contact.props._commanded = commanded;
+    const shouldClose = contactConducts(contact, commanded);
     if (contact.props.contactClosed !== shouldClose) {
       contact.props.contactClosed = shouldClose;
       contactorChanged = true;
@@ -1619,7 +1933,7 @@ function solveCircuit() {
     } else {
       _solveStateHistory.push(currentState);
       if (_solveStateHistory.length > 10) _solveStateHistory.shift(); // Keep history limited
-      solveCircuit();
+      solveElectricalPass();
       return;
     }
   }
@@ -1648,8 +1962,13 @@ function solveCircuit() {
     if (contact.type !== 'relay_contact') continue;
     const groupOn = relayGroupEnergized[contact.props.relayGroup] || false;
     contact.props._coilEnergized = groupOn;
-    // NO = closes when energized; NC = opens when energized (inverted)
-    const shouldClose = contact.props.contactMode === 'NC' ? !groupOn : groupOn;
+    // NO = closes when energized; NC = opens when energized (inverted). The fault
+    // is applied AFTER the NO/NC logic, so a welded NC contact stays closed even
+    // when the coil pulls in — the inversion is part of the command, not of the
+    // failure.
+    const commanded = contact.props.contactMode === 'NC' ? !groupOn : groupOn;
+    contact.props._commanded = commanded;
+    const shouldClose = contactConducts(contact, commanded);
     if (contact.props.contactClosed !== shouldClose) {
       contact.props.contactClosed = shouldClose;
       relayChanged = true;
@@ -1664,28 +1983,40 @@ function solveCircuit() {
     } else {
       _solveStateHistory.push(currentState);
       if (_solveStateHistory.length > 10) _solveStateHistory.shift();
-      solveCircuit();
+      solveElectricalPass();
       return;
     }
   }
   // ── Ground fault detection ──
-  // A fault occurs when an earth ground is NOT the neutral bond AND is connected to
-  // live circuit nodes — detected via current flow or raw voltage on the earth bus.
-  if (_earthPreBond.size > 0) {
+  // Delegated to protection.js, which requires a COMPLETE PATH rather than mere
+  // contact with earth. The old test here fired whenever a ground touched any
+  // non-neutral net and anything anywhere drew more than 10 mA, and it quoted the
+  // largest LOAD current as the fault current — so a single ground on a hot leg
+  // with no return path reported a ground fault carrying the load's own amps.
+  if (_earthPreBond.size > 0 && _solveDepth === 1) {
     const earthV = nodeVoltages['999999,0'] || 0;
-    const circuitCurrent = components.reduce((max, c) => {
-      if (isSource(c.type) || c.type === 'earth_ground') return max;
-      return Math.max(max, Math.abs(compResults[c.id]?.current || 0));
-    }, 0);
+    const groundList = [];
+    for (const c of components) {
+      if (c.type !== 'earth_ground') continue;
+      const root = _earthPreBond.get(c.id);
+      groundList.push({ id: c.id, net: root, conductor: _conductorPreBond.get(root) || null });
+    }
+    // Fault current is the current in the fault PATH. An ideal bond makes a
+    // line-to-ground fault a bolted short, so the magnitude the source computed
+    // for that short is the fault current — never a load current.
+    let boltedFault = 0;
+    for (const [, amps] of _shortedSources) boltedFault = Math.max(boltedFault, amps);
+    const results = classifyGrounds({
+      grounds: groundList,
+      isBond:       g => _neutralPreBond.has(g.net),
+      isOnCircuit:  g => _circuitNets.has(g.net),
+      earthVoltage: earthV,
+      faultCurrentFor: () => boltedFault
+    });
     for (const c of components) {
       if (c.type !== 'earth_ground') continue;
       if (!compResults[c.id]) compResults[c.id] = {};
-      const preBondRoot = _earthPreBond.get(c.id);
-      const isNeutralBond = _neutralPreBond.has(preBondRoot);
-      const isConnected  = _circuitNets.has(preBondRoot);
-      compResults[c.id]._groundFault   = !isNeutralBond && isConnected && (circuitCurrent > 0.01 || Math.abs(earthV) > 0.5);
-      compResults[c.id]._faultVoltage  = earthV;
-      compResults[c.id]._faultCurrent  = circuitCurrent;
+      Object.assign(compResults[c.id], results[c.id] || {});
     }
   }
 
@@ -1778,11 +2109,8 @@ function solveCircuit() {
 
   } finally {
     _solveDepth--;
-    // Auto-refresh multimeter and NCV tester after every top-level solve
-    if (_solveDepth === 0) {
-      if (meterActive && meterProbe1 && meterProbe2) takeMeasurement();
-      if (ncvtActive && window.detectNCV) window.detectNCV();
-    }
+    // Instruments are refreshed by solveCircuit() once protection has settled,
+    // so a reading is never taken from a half-settled intermediate pass.
   }
 }
 

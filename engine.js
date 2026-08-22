@@ -1228,9 +1228,34 @@ function updateStatus(g) {
   if (isComponentTool(currentTool)) msg += ` | Placing ${currentTool} (R to rotate)`;
   if (meterActive) msg += ' | Multimeter active';
   if (simRunning) msg += ' | Simulation running';
+  _lastStatusMsg = msg;
   setStatus(msg);
 }
-function setStatus(msg) { document.getElementById('statusbar').textContent = msg; }
+
+// ── Diagnostic line ──────────────────────────────────────────────────────────
+// The electrical results stay authoritative — meters, energized colouring and
+// component state say what is happening. This is one concise sentence naming the
+// most severe condition the protection layer classified, so a trainee is not left
+// guessing why a circuit went dead. Deliberately not a banner and not an alert.
+let _lastStatusMsg = '';
+let _diagnostic = '';
+function updateDiagnostics() {
+  const ev = (simRunning && typeof TBProtection !== 'undefined') ? TBProtection.primary() : null;
+  const line = ev ? (ev.action || ev.reason || '') : '';
+  if (line === _diagnostic) return;
+  _diagnostic = line;
+  const bar = document.getElementById('statusbar');
+  if (bar) bar.classList.toggle('has-fault', !!line);
+  setStatus(_lastStatusMsg);
+}
+function setStatus(msg) {
+  _lastStatusMsg = msg;
+  const bar = document.getElementById('statusbar');
+  if (!bar) return;
+  // While a condition is classified the strip carries only that — mixing the
+  // pointer read-out into it would bury the one line that matters.
+  bar.textContent = _diagnostic || msg;
+}
 let _cautionTimer = null;
 function showCautionToast(title, sub, duration) {
   const toast = document.getElementById('caution-toast');
@@ -1318,6 +1343,7 @@ function animLoop(ts) {
   // Re-solve circuit each frame so time delay countdowns progress
   // and contactor state changes propagate in real time
   if (simRunning) { solveCircuit(); autoMeterUpdate(); }
+  updateDiagnostics();
 
   render();
   requestAnimationFrame(animLoop);

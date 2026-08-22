@@ -896,8 +896,25 @@ body {
 
 
 /* ── Status Bar & Context Menu ── */
+/* Hidden until protection actually classifies something. When it does, this is a
+   single quiet line at the foot of the workspace naming the condition — not a
+   banner, not an alert. The meters, component states and energized colouring
+   remain the authoritative answer; this only saves the trainee from guessing why
+   a circuit went dead. */
 #statusbar {
   display: none;
+}
+#statusbar.has-fault {
+  display: block;
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 60;
+  padding: 6px 14px;
+  background: #fdf2f0;
+  border-top: 2px solid #b3261e;
+  color: #7d1810;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  pointer-events: none;
 }
 
 #context-menu {

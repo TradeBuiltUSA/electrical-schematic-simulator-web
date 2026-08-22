@@ -931,12 +931,12 @@ function onMouseUp(e) {
       }
       if ((c.type === 'fuse' || c.type === 'lv_fuse' || c.type === 'td_fuse') && c.props.blown) {
         c.props.blown = false;
-        c.props._ocStartTime = null;
+        TBProtection.rearm(c);   // a replacement device starts cold, not part-melted
         if (simRunning) solveCircuit();
       }
       if (c.type === 'breaker') {
         c.props.tripped = !c.props.tripped;
-        c.props._ocStartTime = null;
+        TBProtection.rearm(c);
         if (simRunning) solveCircuit();
       }
     }

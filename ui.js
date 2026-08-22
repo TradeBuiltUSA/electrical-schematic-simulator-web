@@ -69,38 +69,42 @@ function showPropsPanel(comp, clickX, clickY) {
   const fields = [];
   if (comp.type === 'ac_source') {
     fields.push({ key: 'on', label: 'On', type: 'checkbox' });
+    fields.push({ key: 'faultCurrent', label: 'Available Fault Current (A)', type: 'number' });
     fields.push({ key: 'voltage', label: 'Voltage (V RMS)', type: 'number' });
     fields.push({ key: 'frequency', label: 'Frequency (Hz)', type: 'number' });
   }
   if (comp.type === 'ac_120') {
     fields.push({ key: 'on', label: 'On', type: 'checkbox' });
+    fields.push({ key: 'faultCurrent', label: 'Available Fault Current (A)', type: 'number' });
     fields.push({ key: 'frequency', label: 'Frequency (Hz)', type: 'number' });
   }
   if (comp.type === 'ac_240') {
     fields.push({ key: 'on', label: 'On', type: 'checkbox' });
+    fields.push({ key: 'faultCurrent', label: 'Available Fault Current (A)', type: 'number' });
     fields.push({ key: 'frequency', label: 'Frequency (Hz)', type: 'number' });
   }
   if (comp.type === 'ac_480') {
     fields.push({ key: 'on', label: 'On', type: 'checkbox' });
+    fields.push({ key: 'faultCurrent', label: 'Available Fault Current (A)', type: 'number' });
     fields.push({ key: 'frequency', label: 'Frequency (Hz)', type: 'number' });
   }
   if (comp.type === 'ac_480_wye') {
     fields.push({ key: 'on', label: 'On', type: 'checkbox' });
+    fields.push({ key: 'faultCurrent', label: 'Available Fault Current (A)', type: 'number' });
     fields.push({ key: 'frequency', label: 'Frequency (Hz)', type: 'number' });
   }
   if (comp.type === 'dc_source') {
     fields.push({ key: 'on', label: 'On', type: 'checkbox' });
+    fields.push({ key: 'faultCurrent', label: 'Available Fault Current (A)', type: 'number' });
     fields.push({ key: 'voltage', label: 'Voltage', type: 'select', options: ['12', '24', '48'] });
   }
   if (comp.type === 'resistor') {
     fields.push({ key: 'resistance', label: 'Resistance (\u03A9)', type: 'number' });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open', 'short'] });
   }
   if (comp.type === 'bulb') {
     fields.push({ key: 'wattRating', label: 'Watt Rating', type: 'number' });
     fields.push({ key: 'resistance', label: 'Resistance (\u03A9)', type: 'number' });
     fields.push({ key: 'bulbColor', label: 'Bulb Color', type: 'select', options: ['yellow', 'red', 'blue', 'orange'] });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open', 'short'] });
   }
   if (comp.type === 'fan') {
     fields.push({ key: 'motorVoltage', label: 'Voltage (V)', type: 'number' });
@@ -116,11 +120,9 @@ function showPropsPanel(comp, clickX, clickY) {
     fields.push({ key: 'startInductance', label: 'Start L (H)', type: 'number' });
     fields.push({ key: 'startCutout', label: 'Start Winding Cutout', type: 'checkbox' });
     fields.push({ key: 'startCutoutTime', label: 'Cutout Time (s)', type: 'number' });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open-run', 'open-start', 'short-run', 'short-start'] });
   }
   if (comp.type === 'capacitor') {
     fields.push({ key: 'capacitance', label: 'Capacitance (\u00B5F)', type: 'number' });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open', 'short'] });
     // Show computed Xc as a read-only info line
     if (simRunning) {
       const freq = (() => {
@@ -139,15 +141,16 @@ function showPropsPanel(comp, clickX, clickY) {
   if (comp.type === 'fuse' || comp.type === 'lv_fuse' || comp.type === 'td_fuse') {
     fields.push({ key: 'ratedAmps', label: 'Rated Amps', type: 'number' });
     if (comp.type === 'td_fuse') {
-      fields.push({ key: 'delaySeconds', label: 'Delay (seconds)', type: 'number' });
+      fields.push({ key: 'delaySeconds', label: 'Clear Time at 200% (s)', type: 'number' });
     }
+    fields.push({ key: 'poleGroup', label: 'Pole Group (blank = single)', type: 'text' });
     if (comp.props.blown) {
       const resetBtn = document.createElement('button');
       resetBtn.textContent = 'Reset Fuse';
       resetBtn.style.cssText = 'margin-top:8px; width:100%; padding:6px; background:#2a7acc; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:13px;';
       resetBtn.addEventListener('click', () => {
         comp.props.blown = false;
-        comp.props._ocStartTime = null;
+        TBProtection.rearm(comp);
         if (simRunning) solveCircuit();
         autoSave();
         showPropsPanel(comp);
@@ -159,14 +162,16 @@ function showPropsPanel(comp, clickX, clickY) {
   }
   if (comp.type === 'breaker') {
     fields.push({ key: 'ratedAmps', label: 'Trip Amperage (A)', type: 'number' });
-    fields.push({ key: 'delaySeconds', label: 'Trip Delay (seconds)', type: 'number' });
+    fields.push({ key: 'delaySeconds', label: 'Thermal Trip at 200% (s)', type: 'number' });
+    fields.push({ key: 'magneticTrip', label: 'Magnetic Trip (\u00D7 rating)', type: 'number' });
+    fields.push({ key: 'poleGroup', label: 'Pole Group (blank = single)', type: 'text' });
     if (comp.props.tripped) {
       const resetBtn = document.createElement('button');
       resetBtn.textContent = 'Reset Breaker';
       resetBtn.style.cssText = 'margin-top:8px; width:100%; padding:6px; background:#2a7acc; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:13px;';
       resetBtn.addEventListener('click', () => {
         comp.props.tripped = false;
-        comp.props._ocStartTime = null;
+        TBProtection.rearm(comp);
         if (simRunning) solveCircuit();
         autoSave();
         showPropsPanel(comp);
@@ -179,6 +184,7 @@ function showPropsPanel(comp, clickX, clickY) {
   if (comp.type === 'transformer') {
     fields.push({ key: 'primaryVoltage', label: 'Primary Voltage (V)', type: 'number' });
     fields.push({ key: 'secondaryVoltage', label: 'Secondary Voltage (V)', type: 'number' });
+    fields.push({ key: 'vaRating', label: 'Rating (VA)', type: 'number' });
   }
   if (comp.type === 'switch') fields.push({ key: 'closed', label: 'Closed', type: 'checkbox' });
   if (comp.type === 'time_delay') {
@@ -189,7 +195,6 @@ function showPropsPanel(comp, clickX, clickY) {
     fields.push({ key: 'coilResistance', label: 'Coil Resistance (Ω)', type: 'number' });
     fields.push({ key: 'contactorGroup', label: 'Contactor Group', type: 'text' });
     fields.push({ key: 'inductance', label: 'Inductance (H)', type: 'number' });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open', 'short'] });
   }
   if (comp.type === 'contactor_contact') {
     fields.push({ key: 'contactorGroup', label: 'Contactor Group', type: 'text' });
@@ -199,7 +204,6 @@ function showPropsPanel(comp, clickX, clickY) {
     fields.push({ key: 'coilResistance', label: 'Coil Resistance (Ω)', type: 'number' });
     fields.push({ key: 'relayGroup', label: 'Relay Group', type: 'text' });
     fields.push({ key: 'inductance', label: 'Inductance (H)', type: 'number' });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open', 'short'] });
   }
   if (comp.type === 'relay_contact') {
     fields.push({ key: 'relayGroup', label: 'Relay Group', type: 'text' });
@@ -207,7 +211,16 @@ function showPropsPanel(comp, clickX, clickY) {
   }
   if (comp.type === 'outlet') {
     fields.push({ key: 'wattage', label: 'Load Wattage (W, 0 = empty)', type: 'number' });
-    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select', options: ['none', 'open', 'short'] });
+  }
+  // Fault simulation comes from the registry in protection.js rather than being
+  // listed per type here. That is what keeps the panel, the solver and the docs in
+  // step: a mode the solver honours but the table omits is unreachable, and that
+  // mismatch is now one table to check instead of four files. Kept last and
+  // unstyled so it stays subordinate to the component's real properties.
+  const _faultModes = faultModesFor(comp.type);
+  if (_faultModes) {
+    fields.push({ key: 'faultMode', label: 'Fault Simulation', type: 'select',
+                  options: _faultModes, optionLabels: _faultModes.map(faultLabel) });
   }
   fields.push({ key: 'label', label: 'Label', type: 'text' });
 
@@ -256,12 +269,17 @@ function showPropsPanel(comp, clickX, clickY) {
     const lbl = document.createElement('label'); lbl.textContent = f.label;
     if (f.type === 'select') {
       const sel = document.createElement('select');
-      for (const opt of f.options) {
+      f.options.forEach((opt, i) => {
         const o = document.createElement('option');
-        o.value = opt; o.textContent = opt.charAt(0).toUpperCase() + opt.slice(1);
+        o.value = opt;
+        // A field may supply its own wording — fault modes read as sentences a
+        // trainee recognises ("Contacts welded closed"), not as kebab-case keys.
+        o.textContent = (f.optionLabels && f.optionLabels[i])
+          ? f.optionLabels[i]
+          : opt.charAt(0).toUpperCase() + opt.slice(1);
         if (comp.props[f.key] === opt) o.selected = true;
         sel.appendChild(o);
-      }
+      });
       sel.addEventListener('change', () => {
         // Convert numeric select options (voltage) to numbers
         comp.props[f.key] = (f.key === 'voltage') ? Number(sel.value) : sel.value;

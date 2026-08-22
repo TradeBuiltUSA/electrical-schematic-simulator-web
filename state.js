@@ -15,7 +15,19 @@ const CONFIG = {
   ANIMATION_TIMEOUT_MS: 600,        // Long-press timeout and animation delays
   SURGE_PEAK_FACTOR: 6,              // LRA ≈ 6× FLA (locked-rotor inrush)
   SURGE_TAU: 0.3,                    // Exponential decay time constant (seconds)
-  SURGE_THRESHOLD: 1.05              // Stop surge when factor drops below this
+  SURGE_THRESHOLD: 1.05,             // Stop surge when factor drops below this
+  // Impedance of a bolted fault. Small but never zero: a true 0 Ω branch puts an
+  // infinite conductance in the nodal matrix, and V/0 in every current formula.
+  // The fault current a bolted short produces is set by the SOURCE impedance
+  // (see sourceInternalR in protection.js), not by this floor.
+  FAULT_RESISTANCE: 0.005,
+  // Resistance of a closed contact, fuse element or breaker pole. These are
+  // stamped as real branches rather than merged into a single net, which is what
+  // gives every protective device a solved current instead of an attributed
+  // guess. About a milliohm — the order of a real closed contact, invisible on a
+  // meter (15 mV at 15 A) and small enough not to disturb any circuit result,
+  // while keeping the nodal matrix comfortably conditioned.
+  CONTACT_RESISTANCE: 0.001
 };
 
 // Per-field bounds for the numeric inputs in the properties panel.
@@ -42,31 +54,34 @@ const PROP_LIMITS = {
   startInductance:  { min: 0,     max: 1e3 },
   delaySeconds:     { min: 0.1,   max: 3600 },  // > 0: the countdown arc divides by it
   startCutoutTime:  { min: 0.1,   max: 3600 },
+  faultCurrent:     { min: 1,     max: 1e6 },   // available fault current at the source
+  magneticTrip:     { min: 1.5,   max: 100 },   // breaker instantaneous pickup, × rating
+  vaRating:         { min: 1,     max: 1e6 },   // transformer nameplate VA
 };
 
 const ComponentDefaults = {
-  ac_source: { resistance: 0, voltage: 120, frequency: 60, label: 'AC Power Source', on: true },
-  ac_120:    { resistance: 0, voltage: 120, frequency: 60, label: '120V Power Source', on: true },
-  ac_240:    { resistance: 0, voltage: 240, frequency: 60, label: '240V Power Source', on: true },
-  ac_480:    { resistance: 0, voltage: 480, frequency: 60, label: '480V \u0394 3\u03c6 (Delta)', on: true },
-  ac_480_wye: { resistance: 0, voltage: 480, frequency: 60, label: '480V Wye Power Source', on: true },
-  dc_source: { resistance: 0, voltage: 12, label: 'DC Battery', on: true },
+  ac_source: { resistance: 0, voltage: 120, frequency: 60, label: 'AC Power Source', on: true, faultCurrent: 1000 },
+  ac_120:    { resistance: 0, voltage: 120, frequency: 60, label: '120V Power Source', on: true, faultCurrent: 1000 },
+  ac_240:    { resistance: 0, voltage: 240, frequency: 60, label: '240V Power Source', on: true, faultCurrent: 1000 },
+  ac_480:    { resistance: 0, voltage: 480, frequency: 60, label: '480V \u0394 3\u03c6 (Delta)', on: true, faultCurrent: 10000 },
+  ac_480_wye: { resistance: 0, voltage: 480, frequency: 60, label: '480V Wye Power Source', on: true, faultCurrent: 10000 },
+  dc_source: { resistance: 0, voltage: 12, label: 'DC Battery', on: true, faultCurrent: 500 },
   resistor:  { resistance: 100, voltage: 0, label: 'Resistor', faultMode: 'none' },
   bulb:      { resistance: 144, voltage: 0, label: 'Light Bulb', wattRating: 100, bulbColor: 'yellow', faultMode: 'none' },
-  switch:    { resistance: 0, voltage: 0, closed: true, label: 'SPST Switch' },
-  fuse:      { resistance: 0.5, voltage: 0, ratedAmps: 15, blown: false, label: 'High Voltage Fuse' },
-  lv_fuse:   { resistance: 0.5, voltage: 0, ratedAmps: 3, blown: false, label: 'Low Voltage Fuse' },
-  td_fuse:   { resistance: 0.5, voltage: 0, ratedAmps: 30, blown: false, delaySeconds: 10, label: 'Time Delay Fuse' },
-  breaker:   { resistance: 0, voltage: 0, ratedAmps: 20, tripped: false, delaySeconds: 5, label: 'Single Pole Breaker' },
+  switch:    { resistance: 0, voltage: 0, closed: true, label: 'SPST Switch', faultMode: 'none' },
+  fuse:      { resistance: 0.5, voltage: 0, ratedAmps: 15, blown: false, poleGroup: '', label: 'High Voltage Fuse' },
+  lv_fuse:   { resistance: 0.5, voltage: 0, ratedAmps: 3, blown: false, poleGroup: '', label: 'Low Voltage Fuse' },
+  td_fuse:   { resistance: 0.5, voltage: 0, ratedAmps: 30, blown: false, delaySeconds: 10, poleGroup: '', label: 'Time Delay Fuse' },
+  breaker:   { resistance: 0, voltage: 0, ratedAmps: 20, tripped: false, delaySeconds: 5, magneticTrip: 10, poleGroup: '', label: 'Single Pole Breaker' },
   fan:       { resistance: 38.6, voltage: 0, label: 'Fan Motor', motorVoltage: 120, hp: '1/2 HP', wattRating: 300, faultMode: 'none', powerFactor: 0.75, inductance: 0.09 },
-  transformer: { primaryVoltage: 120, secondaryVoltage: 24, label: 'Transformer' },
+  transformer: { primaryVoltage: 120, secondaryVoltage: 24, vaRating: 40, label: 'Transformer', faultMode: 'none' },
   time_delay: { resistance: 0, voltage: 0, closed: false, delaySeconds: 5, label: 'Time Delay Switch' },
   contactor_coil: { coilVoltage: 24, coilResistance: 200, contactorGroup: 'A', label: 'SP Contactor Coil', faultMode: 'none', powerFactor: 0.60, inductance: 0.71 },
-  contactor_contact: { resistance: 0, contactorGroup: 'A', contactClosed: false, label: 'SP Contactor Contact' },
+  contactor_contact: { resistance: 0, contactorGroup: 'A', contactClosed: false, label: 'SP Contactor Contact', faultMode: 'none' },
   capacitor: { capacitance: 10, resistance: 265, label: 'Capacitor', condition: 'good', faultMode: 'none' },
   outlet:    { wattage: 0, resistance: 1e6, label: 'Outlet', faultMode: 'none' },
   relay_coil: { coilVoltage: 24, coilResistance: 150, relayGroup: 'A', label: 'Relay Coil', faultMode: 'none', powerFactor: 0.60, inductance: 0.53 },
-  relay_contact: { resistance: 0, relayGroup: 'A', contactMode: 'NO', contactClosed: false, label: 'Relay Contact (NO)' },
+  relay_contact: { resistance: 0, relayGroup: 'A', contactMode: 'NO', contactClosed: false, label: 'Relay Contact (NO)', faultMode: 'none' },
   earth_ground:  { resistance: 0, label: 'Earth Ground' },
   compressor: { nominalVoltage: 120, hp: '2 HP', runResistance: 1.5, startResistance: 2.5, runInductance: 0.03, startInductance: 0.025, backEMF: 0, startCutout: true, startCutoutTime: 1.5, label: 'Compressor', faultMode: 'none' },
 };

@@ -25,7 +25,7 @@
 <meta property="og:image:alt" content="TradeBuilt Electrical Schematic Simulator - build, wire, and troubleshoot AC and DC circuits in your browser.">
 <meta name="twitter:card" content="summary_large_image">
 
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=2">
 <link rel="stylesheet" href="auth.css?v=5">
 </head>
 <body>
@@ -639,20 +639,22 @@
 <div id="statusbar" role="status" aria-live="polite">Ready — Select a tool and click the grid to build your circuit.</div>
 
 <!-- Split from app.js — loaded in dependency order (no ES modules) -->
-<script src="state.js"></script>
+<script src="state.js?v=4"></script>
+<script src="phasor.js?v=1"></script>
+<script src="protection.js?v=3"></script>
 <script src="workspace.js"></script>
 <script src="wires.js"></script>
-<script src="components.js"></script>
+<script src="components.js?v=3"></script>
 <script src="symbols.js"></script>
-<script src="inputs.js"></script>
-<script src="solver.js"></script>
-<script src="multimeter.js"></script>
-<script src="ui.js"></script>
+<script src="inputs.js?v=2"></script>
+<script src="solver.js?v=15"></script>
+<script src="multimeter.js?v=5"></script>
+<script src="ui.js?v=3"></script>
 <script src="tools.js"></script>
 <!-- Cloud project store. Before engine.js: it defines the store the Save/Load
      dialogs call into, and its own top level touches nothing but one listener. -->
 <script src="cloud.js?v=1"></script>
-<script src="engine.js"></script>
+<script src="engine.js?v=2"></script>
 <!-- ?v= pins the gate's script and stylesheet to the markup below. These
      files are cached independently of this page, so a bare URL lets a fresh
      page pull a stale script that expects markup this page no longer has —

@@ -111,17 +111,86 @@ const SOURCE_FAULT_DEFAULTS = {
   dc_source:   500
 };
 
-// Series resistance of a source, in ohms. Never returns 0 or a non-finite value —
-// it is stamped as a conductance, so a zero here would put Infinity in the matrix.
-function sourceInternalR(src) {
+// ── Sizing Rs from the declared available fault current ─────────────────────
+//
+// DEFINITION. "Available Fault Current" is the RMS current a BOLTED FAULT AT THE
+// SOURCE'S TERMINALS delivers — the three-phase symmetrical value on a
+// three-phase source, the line-to-line value on a single-phase one. That is the
+// quantity a utility quotes, the one an equipment interrupting rating is compared
+// against, and the one a trades student is taught to look up. It means the same
+// thing on every source in this simulator.
+//
+// The rule that delivers it is one line:
+//
+//     Rs = E_winding / I_available
+//
+// where E_winding is the EMF of ONE winding — not the nameplate, which is a
+// TERMINAL voltage and is only the same thing when a single winding spans the
+// terminals.
+//
+//   two-terminal (120 V, generic AC, DC)  E = V        Rs = V/Ifc
+//   120/240 split-phase                   E = V/2      Rs = V/(2·Ifc)
+//   480 V delta and 480Y/277 wye          E = V/√3     Rs = (V/√3)/Ifc
+//
+// Both three-phase sources are stamped as three windings of V/√3 to a common star
+// point (a delta as its wye equivalent — see stampSource), so both take the same
+// per-winding EMF. Sizing them from the LINE-TO-LINE nameplate instead treated a
+// 277 V winding as though it produced 480 V, and a 480 V source declaring
+// 10,000 A delivered 5,773 A into a three-phase fault and 5,000 A line-to-line.
+// The properties panel says "Available Fault Current (A)"; nothing delivered it.
+//
+// WHAT FALLS OUT, for a three-phase source declaring Ifc:
+//   three-phase bolted ....... E/Rs        = Ifc
+//   line-to-line bolted ...... V/(2·Rs)    = (√3/2)·Ifc ≈ 0.866·Ifc
+//   line-to-ground, bonded ... E/Rs        = Ifc
+//
+// The last two are CONSEQUENCES OF THIS ENGINE'S MODEL, not universal facts. One
+// impedance per winding means the positive-, negative- and zero-sequence
+// impedances are all equal, which is what makes L-L come out at √3/2 of the
+// three-phase value and L-G come out equal to it. A real system has Z0 ≠ Z1 and a
+// non-zero X/R, so its ratios differ. See README § Source impedance.
+function sourceWindingEMF(src) {
   const V = (src && src.props && src.props.voltage) || 0;
+  switch (src && src.type) {
+    case 'ac_240':     return V / 2;              // centre-tapped: two half-windings
+    case 'ac_480':                                // delta, stamped as its wye equivalent
+    case 'ac_480_wye': return V / Math.sqrt(3);   // three windings to a star point
+    default:           return V;                  // one winding across the terminals
+  }
+}
+
+// How many windings the DECLARED fault crosses. Used only to report the impedance
+// that fault sees; the sizing above is per winding.
+//   two-terminal ..... 1 winding, the declared fault is across it
+//   split-phase ...... 2 in series, the declared L1-L2 fault crosses both
+//   three-phase ...... 1, because the declared fault is the THREE-PHASE one, and
+//                      by symmetry its node sits at the star point so each winding
+//                      sees only itself
+const SOURCE_WINDING_SPAN = { ac_240: 2 };
+function sourceWindingSpan(src) {
+  return (src && SOURCE_WINDING_SPAN[src.type]) || 1;
+}
+
+// Series resistance of ONE source winding, in ohms. Never returns 0 or a
+// non-finite value — it is stamped as a conductance, so a zero here would put
+// Infinity in the matrix.
+function sourceInternalR(src) {
+  const E = sourceWindingEMF(src);
   const declared = src && src.props ? src.props.faultCurrent : undefined;
   const Ifc = (typeof declared === 'number' && isFinite(declared) && declared > 0)
     ? declared
     : (SOURCE_FAULT_DEFAULTS[src && src.type] || 1000);
-  if (!(V > 0)) return CONFIG.MIN_RESISTANCE;
-  const R = V / Ifc;
+  if (!(E > 0)) return CONFIG.MIN_RESISTANCE;
+  const R = E / Ifc;
   return (isFinite(R) && R > 1e-9) ? R : 1e-9;
+}
+
+// The impedance the DECLARED fault actually sees, which is what `sourceImpedance`
+// reports: E_winding·span / Ifc. For a two-terminal or split-phase source that is
+// V_nominal/Ifc; for a three-phase source it is V_LN/Ifc — the conventional
+// per-phase source impedance of a service with that much available.
+function sourceLoopR(src) {
+  return sourceInternalR(src) * sourceWindingSpan(src);
 }
 
 // Available fault current actually in force for a source (after defaults).
@@ -806,8 +875,16 @@ function contactSeriesR(c) {
 }
 
 // ── Effective resistance of a faulted load ───────────────────────────────────
+// The single point where every load's resistance enters the solve, so it is also
+// the right place to reject one that is not a number. Persisted props are
+// untrusted, and every solver path downstream already filters on `resistance > 0`
+// — but a NaN silently survived that filter into the published `resistance` field
+// and into the derived impedance, breaking the guarantee that nothing non-finite
+// is ever published. Coercing to 0 gives exactly the behaviour a 0 Ω part already
+// has: no branch, and a finite report.
 function loadResistanceFor(c, baseR) {
-  return faultOf(c) === 'high-resistance' ? baseR * FAULT_MODEL.HIGH_R_FACTOR : baseR;
+  const R = (typeof baseR === 'number' && isFinite(baseR) && baseR > 0) ? baseR : 0;
+  return faultOf(c) === 'high-resistance' ? R * FAULT_MODEL.HIGH_R_FACTOR : R;
 }
 
 // ── Motor terminal voltage ───────────────────────────────────────────────────

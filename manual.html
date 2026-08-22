@@ -197,9 +197,19 @@
     <li>Right-click and select "Flip L1 / N" to swap terminal orientation</li>
     <li>Detects short circuits and overload conditions</li>
   </ul>
-  <p><strong>240V Power Source</strong> — Single phase, two hot legs labeled L1 and L2. Same properties as the 120V source.</p>
-  <p><strong>480V &Delta; Power Source</strong> — Three phase delta, three terminals labeled L1, L2 and L3, with no neutral. 480V line-to-line.</p>
-  <p><strong>480V Wye Power Source</strong> — Three phase wye (480Y/277V): three hot legs plus a neutral, so line-to-neutral measures 277V.</p>
+  <p><strong>240V Power Source</strong> — Single phase, two hot legs labeled L1 and L2. Same properties as the 120V source. Internally it is a centre-tapped winding, but the centre tap is not brought out: there is no neutral terminal, so loads connect L1&ndash;L2. Available Fault Current means the same thing here as on the 120V source &mdash; the current a bolted fault between the two terminals delivers.</p>
+  <p><strong>480V &Delta; Power Source</strong> — Three phase delta, three terminals labeled L1, L2 and L3, with no neutral. 480V line-to-line. Because a delta has no neutral to bond, a single line grounded has no return path: the connection is there and no current flows. Ground two lines and you have a line-to-line fault through earth.</p>
+  <p><strong>480V Wye Power Source</strong> — Three phase wye (480Y/277V): three hot legs plus a neutral, so line-to-neutral measures 277V. Bond the neutral to earth and a line-to-ground fault behaves as a bolted line-to-neutral fault.</p>
+
+  <h3>Available Fault Current</h3>
+  <p><strong>Every source has an <em>Available Fault Current</em> property, and it means the same thing on all of them: the current a bolted fault at that source's terminals delivers.</strong> On a three-phase source that is the three-phase value; on a single-phase source it is the line-to-line value. Set it to match the service you are teaching &mdash; it is the one number that decides whether a fault is a nuisance or a hazard, and every protective device downstream responds to it.</p>
+  <p>A few relationships follow from it, and they are worth showing a class:</p>
+  <ul>
+    <li>A <strong>three-phase bolted fault</strong> draws the declared figure.</li>
+    <li>A <strong>line-to-line bolted fault</strong> draws about <strong>87%</strong> of it, because the fault crosses two windings in series.</li>
+    <li>A <strong>line-to-ground fault on a bonded wye</strong> draws the declared figure, the same as a three-phase fault.</li>
+  </ul>
+  <p><strong>These are teaching values, not a fault-duty study.</strong> The simulator models source impedance as pure resistance with no X/R ratio, so it shows the right order of magnitude and the right behaviour &mdash; but it does not predict a real utility's fault duty, and its numbers must never be used to select equipment interrupting ratings.</p>
   <p><strong>DC Battery</strong> — Direct current source, default 12V, terminals labeled + and &minus;. Flip with <strong>F</strong> or the right-click menu.</p>
   <p><strong>Earth Ground</strong> — Ties a node to earth potential as a 0V reference.</p>
   <p><strong>Transformer</strong></p>

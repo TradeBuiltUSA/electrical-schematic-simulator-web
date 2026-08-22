@@ -618,10 +618,30 @@ function solveElectricalPass() {
   // faulted. It has to be captured here: once the earth bond is applied the roots
   // move, and looking them up afterwards never matches.
   const _conductorPreBond = new Map();
+  // Which terminal, if any, is a source's SYSTEM NEUTRAL — the one where a ground
+  // is an intentional bond rather than a fault.
+  //
+  // It is not simply "the second terminal", and assuming so misread every
+  // three-phase system:
+  //   • A wye source brings its neutral out at gx4; gx2 is L2. Grounding the real
+  //     neutral was therefore not recognised as a bond, so a line-to-ground fault
+  //     on a bonded 480Y/277 system — the single most common grounding exercise
+  //     there is — reported no fault at all.
+  //   • A delta source and a split-phase source bring out NO neutral. Their star
+  //     point and centre tap are internal and no wiring can reach them, so a ground
+  //     on any terminal is a fault. Taking gx2 made grounding L2 on a 480 V delta
+  //     read as an intentional system bond.
+  // Independent audit caught both; there are regression tests for each.
+  const _bondTerminalOf = c => {
+    if (c.type === 'ac_480_wye' && c.gx4 !== undefined) return [c.gx4, c.gy4];
+    if (c.type === 'ac_480' || c.type === 'ac_240') return null;   // no neutral brought out
+    return [c.gx2, c.gy2];
+  };
   for (const c of components) {
     if (c.type === 'earth_ground') { _earthPreBond.set(c.id, find(key(c.gx1, c.gy1))); continue; }
     if (isSource(c.type)) {
-      _neutralPreBond.add(find(key(c.gx2, c.gy2)));
+      const bondT = _bondTerminalOf(c);
+      if (bondT) _neutralPreBond.add(find(key(bondT[0], bondT[1])));
       const hot = find(key(c.gx1, c.gy1));
       if (!_conductorPreBond.has(hot)) _conductorPreBond.set(hot, c.type === 'dc_source' ? 'DC+' : 'L1');
       const second = find(key(c.gx2, c.gy2));
@@ -645,6 +665,10 @@ function solveElectricalPass() {
     _circuitNets.add(find(key(c.gx1, c.gy1)));
     _circuitNets.add(find(key(c.gx2, c.gy2)));
     if (c.gx3 !== undefined) _circuitNets.add(find(key(c.gx3, c.gy3)));
+    // The wye neutral. Without it, a neutral carrying no load is on no circuit net
+    // at all, so a ground there is classified as neither a bond nor a fault and
+    // silently disappears from the grounding analysis.
+    if (c.gx4 !== undefined) _circuitNets.add(find(key(c.gx4, c.gy4)));
   }
 
   // ── Auto-union ground components to their virtual bus nodes ──
@@ -753,10 +777,15 @@ function solveElectricalPass() {
   // AC: Z = √(R² + XL²), XL = 2πfL, PF = R/Z
   // DC or no inductance: Z = R, PF = 1.0
   function computeImpedance(R, inductance, frequency, sourceType) {
-    if (!inductance || inductance <= 0 || sourceType === 'DC') return { Z: R, XL: 0, pf: 1.0 };
+    // R comes from persisted props and is not necessarily a number. admittanceOf()
+    // already treats anything non-positive as zero resistance; this path squared it
+    // instead, so a missing `resistance` on an inductive part published |Z| = NaN
+    // into compResults even though the branch itself stamped correctly.
+    const Rr = (typeof R === 'number' && isFinite(R) && R > 0) ? R : 0;
+    if (!inductance || inductance <= 0 || sourceType === 'DC') return { Z: Rr, XL: 0, pf: 1.0 };
     const XL = 2 * Math.PI * frequency * inductance;
-    const Z = Math.sqrt(R * R + XL * XL);
-    const pf = Z > 0 ? R / Z : 1.0;
+    const Z = Math.sqrt(Rr * Rr + XL * XL);
+    const pf = Z > 0 ? Rr / Z : 1.0;
     return { Z, XL, pf };
   }
 
@@ -805,8 +834,16 @@ function solveElectricalPass() {
       }
       if (c.type === 'outlet') {
         const srcV = sources.length > 0 ? (sources[0].props.voltage || 120) : 120;
+        // R = V²/P, rounded for the properties panel but FLOORED at
+        // MIN_RESISTANCE. Every solver path filters loads on `resistance > 0`, so
+        // a derived value that rounds to 0.0 makes the outlet vanish from the
+        // circuit and read as an open — the exact hazard PROP_LIMITS guards the
+        // hand-entered resistances against, reached here through the derived one.
+        // A 1 MW outlet on 120 V derives 0.0144 Ω, which rounded to 0.0 and
+        // silently disappeared; the threshold is P > 20·V², so a 24 V control
+        // circuit reaches it at 11.5 kW. Independent audit caught it.
         c.props.resistance = c.props.wattage > 0
-          ? Math.round((srcV * srcV / c.props.wattage) * 10) / 10
+          ? Math.max(Math.round((srcV * srcV / c.props.wattage) * 10) / 10, CONFIG.MIN_RESISTANCE)
           : 1e6; // open circuit when empty
       }
     }
@@ -1041,6 +1078,22 @@ function solveElectricalPass() {
   const nodePhasors = {};              // net root → complex voltage
   const _branchOf = new Map();         // component id → { br, net } for current read-back
 
+  // ── Audit hook ─────────────────────────────────────────────────────────────────
+  // Kirchhoff's current law can only be checked against the branches that were
+  // actually stamped, and those live inside this function. audit.js sets
+  // window.TB_AUDIT before solving and reads the solved networks back off here.
+  //
+  // Gated on the flag rather than always published, because this runs on every
+  // animation frame and the solve path is deliberately allocation-free. With the
+  // flag unset the two lines below are one boolean test per solve and nothing else.
+  const _audit = (typeof window !== 'undefined' && window.TB_AUDIT === true);
+  if (_audit && _solveDepth === 1) window._auditNets = [];
+  const _auditPush = (net, res, refKey, kind) => {
+    if (!_audit) return;
+    if (!window._auditNets) window._auditNets = [];
+    window._auditNets.push({ kind, refKey, omega: net.omega, branches: net.branches, voltages: res.voltages });
+  };
+
   // ── Which frequency does each galvanically-connected island run at? ──
   // AC and DC cannot share one phasor solution: they are different frequencies,
   // and superposing them would be meaningless. Islands are solved independently,
@@ -1217,7 +1270,10 @@ function solveElectricalPass() {
     const secB = find(key(xf.gx4, xf.gy4));
     // Winding impedance from the nameplate, the same percent-impedance figure the
     // secondary solve uses.
-    const vaRating = (xf.props.vaRating > 0) ? xf.props.vaRating : 40;
+    // isFinite as well as > 0: Infinity passes a bare `> 0` test and then produces
+    // an infinite rated current and a zero winding impedance.
+    const vaRating = (typeof xf.props.vaRating === 'number' && isFinite(xf.props.vaRating) &&
+                      xf.props.vaRating > 0) ? xf.props.vaRating : 40;
     const secRatedA = vaRating / Vsn;
     const secZ = (Vsn / secRatedA) * 0.05;
     const shortWinding = fm === 'short-secondary';
@@ -1369,6 +1425,7 @@ function solveElectricalPass() {
       });
       continue;
     }
+    _auditPush(net, res, refKey, 'island');
     for (const [k, v] of res.voltages) _solvedVoltages.set(k, v);
 
     // ── Read results back off the solved network ──
@@ -1430,13 +1487,11 @@ function solveElectricalPass() {
 
     // ── Source terminal results ──
     for (const s of inSrcs) {
-      let total = Cx.zero();
       let vTerm = 0;
       let maxPhase = 0, realPower = 0;
       for (const br of net.branches) {
         if (!(br.meta && br.meta.source === s.id)) continue;
         const Ib = branchCurrent(br, res.voltages);
-        total = Cx.add(total, Ib);
         maxPhase = Math.max(maxPhase, Cx.abs(Ib));
         realPower += Math.abs(branchPower(br, res.voltages).real);
       }
@@ -1445,23 +1500,57 @@ function solveElectricalPass() {
       const V1 = res.voltages.get(n1) || Cx.zero();
       const V2 = res.voltages.get(n2) || Cx.zero();
       vTerm = Cx.abs(Cx.sub(V1, V2));
-      // For a two-terminal source the phasor sum IS the delivered current. For a
-      // three-phase source it is not: three balanced winding currents sum to zero
-      // at the star point, so reporting the sum showed a perfectly healthy 480 V
-      // supply as delivering 0 A and 0 W. What a three-phase source is actually
-      // doing is per-phase, so report the busiest conductor — the number a clamp
-      // reads — and the real power summed across the windings.
+      // A source's delivered current is what its BUSIEST WINDING carries — the
+      // number a clamp meter reads on a conductor. The phasor sum of the winding
+      // currents is that same quantity only when the source has exactly one
+      // winding, and both multi-winding sources break it in opposite directions:
+      //
+      //   • Three-phase — three balanced winding currents sum to zero at the star
+      //     point, so the sum reported a perfectly healthy 480 V supply as
+      //     delivering 0 A and 0 W.
+      //   • Split-phase — the two half-windings are in SERIES between L1 and L2,
+      //     so they carry one and the same current and the sum double-counted it.
+      //     A 240 V source feeding 9.8 A reported 19.6 A and twice the power,
+      //     which also put classifySourceLoading()'s overload threshold at half
+      //     the current it should have been. Independent audit caught it; there is
+      //     a regression test for the exact case.
+      //
+      // Taking the largest winding current is correct in all three cases and needs
+      // no per-type branch: a two-terminal source has one winding, so its largest
+      // winding current IS its delivered current.
       const threePhase = s.gx3 !== undefined;
-      const iMag = threePhase ? maxPhase : Cx.abs(total);
+      const iMag = maxPhase;
+      // A source with two of its own terminals on ONE net is feeding a bolted
+      // fault. Two-terminal sources are re-reported by the degenerate block further
+      // down, because collapsing their branch leaves the network nothing to stamp.
+      // Every other family stays perfectly well formed — a split-phase source's
+      // halves meet at an internal centre tap, and a three-phase source's windings
+      // at a star point — so the network solves those correctly and only the FLAGS
+      // were missing. A shorted 120 V source drew the fire symbol and the
+      // "SHORT CIRCUIT! … N A fault … N A available" box; a shorted 240 V or 480 V
+      // one showed neither, which is exactly where that box is most worth reading.
+      const srcRoots = [n1, n2];
+      if (s.gx3 !== undefined) srcRoots.push(find(key(s.gx3, s.gy3)));
+      if (s.gx4 !== undefined) srcRoots.push(find(key(s.gx4, s.gy4)));
+      const terminalsBridged = new Set(srcRoots).size !== srcRoots.length;
       compResults[s.id] = {
         voltageDrop: vTerm, current: iMag,
         watts: threePhase ? realPower : vTerm * iMag,
         resistance: iMag > 1e-9 ? vTerm / iMag : Infinity,
-        sourceImpedance: sourceInternalR(s),
+        // The impedance a fault across the terminals actually sees. For a
+        // split-phase source that is both half-windings in series, so this stays
+        // equal to V_nominal/I_available for every source whose terminals form one
+        // loop — the number a trainee would compute by hand.
+        sourceImpedance: sourceLoopR(s),
         availableFault: sourceFaultCurrent(s),
-        nominalVoltage: s.props.voltage,
+        // The nameplate, guarded: it is published, and everything published must be
+        // finite (ENGINE.md §8). stampSource() already coerces a bad voltage to 0
+        // for the solve; this is the same coercion applied to the report.
+        nominalVoltage: (typeof s.props.voltage === 'number' && isFinite(s.props.voltage))
+          ? s.props.voltage : 0,
         sag: (s.props.voltage || 0) - vTerm,
-        overload: false
+        overload: terminalsBridged,
+        shortCircuit: terminalsBridged
       };
       branchCurrents[s.id] = iMag;
       classifySourceLoading(s, iMag);
@@ -1567,7 +1656,7 @@ function solveElectricalPass() {
     compResults[src.id] = {
       voltageDrop: faultV, current: Isc, watts: V * Isc,
       resistance: Rs,
-      sourceImpedance: Rs, availableFault: sourceFaultCurrent(src),
+      sourceImpedance: sourceLoopR(src), availableFault: sourceFaultCurrent(src),
       overload: true, shortCircuit: true
     };
     branchCurrents[src.id] = Isc;
@@ -1658,7 +1747,20 @@ function solveElectricalPass() {
       continue;
     }
 
-    const ratio = xfmr.props.secondaryVoltage / xfmr.props.primaryVoltage;
+    // A nameplate that is not a pair of positive finite numbers cannot define a
+    // turns ratio, and persisted data is untrusted — a hand-edited or corrupt save
+    // can carry NaN, a string, or a zero here.
+    //
+    // The guard belongs at the ratio rather than downstream. solveNetwork() does
+    // reject a non-finite EMF, but the failure path below is the ORDINARY
+    // "unloaded secondary" case and publishes secVoltage into compResults and into
+    // nodeVoltages for every node on the secondary net — so a NaN ratio escaped
+    // into the node map and broke the engine's promise that nothing non-finite is
+    // ever published. A ratio of 0 is the same behaviour a 0 V nameplate already
+    // produces: no induced secondary, everything finite.
+    const _vp = xfmr.props.primaryVoltage, _vs = xfmr.props.secondaryVoltage;
+    const ratio = (typeof _vp === 'number' && isFinite(_vp) && _vp > 0 &&
+                   typeof _vs === 'number' && isFinite(_vs) && _vs > 0) ? _vs / _vp : 0;
     const secEMF = Cx.scale(priPhasor, ratio);
     const secVoltage = Cx.abs(secEMF);
 
@@ -1670,7 +1772,8 @@ function solveElectricalPass() {
     // reported a lower fault impedance and a higher fault current than its own
     // nameplate allows. Independent benchmarking caught it once the primary began
     // sagging for real.
-    const vaRating   = (xfmr.props.vaRating > 0) ? xfmr.props.vaRating : 40;
+    const vaRating   = (typeof xfmr.props.vaRating === 'number' && isFinite(xfmr.props.vaRating) &&
+                        xfmr.props.vaRating > 0) ? xfmr.props.vaRating : 40;
     const secNominal = xfmr.props.secondaryVoltage > 0 ? xfmr.props.secondaryVoltage : secVoltage;
     const secRatedA  = secNominal > 0 ? vaRating / secNominal : 0;
     const secZ       = secRatedA > 0 ? (secNominal / secRatedA) * 0.05 : CONFIG.MIN_RESISTANCE;
@@ -1740,6 +1843,7 @@ function solveElectricalPass() {
       continue;
     }
 
+    _auditPush(secNet, secRes, secNet2, 'secondary');
     for (const [k, v] of secRes.voltages) _solvedVoltages.set(k, v);
     let secTotal = Cx.zero();
     for (const br of secNet.branches) {
@@ -1908,6 +2012,10 @@ function solveElectricalPass() {
     // Use OR so if ANY coil in the group is energized, the group is energized
     coilGroupEnergized[coil.props.contactorGroup] = (coilGroupEnergized[coil.props.contactorGroup] || false) || isEnergized;
   }
+  // Which contacts were changed, and what they were before — so that if the change
+  // turns out to be part of an oscillation it can be undone. See the note at the
+  // oscillation guard below.
+  const _contactorReverts = [];
   for (const contact of components) {
     if (contact.type !== 'contactor_contact') continue;
     const commanded = coilGroupEnergized[contact.props.contactorGroup] || false;
@@ -1918,6 +2026,7 @@ function solveElectricalPass() {
     contact.props._commanded = commanded;
     const shouldClose = contactConducts(contact, commanded);
     if (contact.props.contactClosed !== shouldClose) {
+      _contactorReverts.push([contact, contact.props.contactClosed]);
       contact.props.contactClosed = shouldClose;
       contactorChanged = true;
     }
@@ -1928,7 +2037,17 @@ function solveElectricalPass() {
       components.filter(c => c.type === 'contactor_contact').map(c => ({ id: c.id, closed: c.props.contactClosed }))
     );
     if (_solveStateHistory.includes(currentState)) {
-      // Oscillation detected, stop recursing
+      // A genuinely bistable control circuit — a coil fed through its own contact.
+      // Stopping here is right; it is what keeps a chattering circuit from hanging
+      // the tab. But the contact positions have ALREADY been flipped, and the
+      // results published in this pass were solved against the positions they had
+      // BEFORE the flip. Leaving both in place published a frame where a contact
+      // read open while `branchCurrents` still credited it with the current it
+      // carried closed — 157 A through an open contact, in the case that found
+      // this. Put the positions back, so the frame reports the state it actually
+      // solved. `_commanded` is deliberately NOT reverted: what the coil asked for
+      // is the diagnostic, and it is what makes the disagreement visible.
+      for (const [contact, was] of _contactorReverts) contact.props.contactClosed = was;
       console.warn('Contactor oscillation detected, stopping recursion');
     } else {
       _solveStateHistory.push(currentState);
@@ -1958,6 +2077,7 @@ function solveElectricalPass() {
 
     relayGroupEnergized[coil.props.relayGroup] = (relayGroupEnergized[coil.props.relayGroup] || false) || isEnergized;
   }
+  const _relayReverts = [];
   for (const contact of components) {
     if (contact.type !== 'relay_contact') continue;
     const groupOn = relayGroupEnergized[contact.props.relayGroup] || false;
@@ -1970,6 +2090,7 @@ function solveElectricalPass() {
     contact.props._commanded = commanded;
     const shouldClose = contactConducts(contact, commanded);
     if (contact.props.contactClosed !== shouldClose) {
+      _relayReverts.push([contact, contact.props.contactClosed]);
       contact.props.contactClosed = shouldClose;
       relayChanged = true;
     }
@@ -1979,6 +2100,10 @@ function solveElectricalPass() {
       components.filter(c => c.type === 'relay_contact').map(c => ({ id: c.id, closed: c.props.contactClosed }))
     );
     if (_solveStateHistory.includes(currentState)) {
+      // Same reasoning as the contactor guard above: the results in hand were
+      // solved against the previous contact positions, so those are the positions
+      // the frame must report.
+      for (const [contact, was] of _relayReverts) contact.props.contactClosed = was;
       console.warn('Relay oscillation detected, stopping recursion');
     } else {
       _solveStateHistory.push(currentState);
@@ -2002,10 +2127,41 @@ function solveElectricalPass() {
       groundList.push({ id: c.id, net: root, conductor: _conductorPreBond.get(root) || null });
     }
     // Fault current is the current in the fault PATH. An ideal bond makes a
-    // line-to-ground fault a bolted short, so the magnitude the source computed
+    // line-to-ground fault a bolted short, so the magnitude the SOURCE computed
     // for that short is the fault current — never a load current.
+    //
+    // Two-terminal sources report it through `_shortedSources`, which is written
+    // by the degenerate "both my terminals are one node" path. Three-phase sources
+    // deliberately never take that path: their windings run to a star point no
+    // wiring can reach, so the network solves a bridged pair correctly and the
+    // per-phase currents ARE the fault currents. Reading them back here is what
+    // stops a bonded-wye line-to-ground fault from being reported as carrying 0 A
+    // while 5,773 A flows through it.
     let boltedFault = 0;
     for (const [, amps] of _shortedSources) boltedFault = Math.max(boltedFault, amps);
+    for (const s3 of sources) {
+      const r3 = compResults[s3.id];
+      if (!r3) continue;
+      // Only when two of the source's own terminals have been bridged — through
+      // the ground path or otherwise — is the source actually feeding a fault.
+      const terms = [[s3.gx1, s3.gy1], [s3.gx2, s3.gy2]];
+      if (s3.gx3 !== undefined) terms.push([s3.gx3, s3.gy3]);
+      if (s3.gx4 !== undefined) terms.push([s3.gx4, s3.gy4]);
+      const roots = terms.map(t => find(key(t[0], t[1])));
+      if (new Set(roots).size === roots.length) continue; // nothing bridged
+      // Three-phase sources report per-phase; everything else reports what its
+      // busiest winding carries, which for a bridged split-phase source IS the
+      // fault current. Without this, a grounded L1 and a grounded L2 on a 240 V
+      // source were classified as a ground fault carrying 0 A while the full
+      // available fault current flowed through the earth path.
+      if (Array.isArray(r3.phaseCurrents)) {
+        for (const amps of r3.phaseCurrents) {
+          if (isFinite(amps)) boltedFault = Math.max(boltedFault, amps);
+        }
+      } else if (isFinite(r3.current)) {
+        boltedFault = Math.max(boltedFault, r3.current);
+      }
+    }
     const results = classifyGrounds({
       grounds: groundList,
       isBond:       g => _neutralPreBond.has(g.net),
@@ -2039,7 +2195,8 @@ function solveElectricalPass() {
       watts: (runCr.watts || 0) + (startCr.watts || 0),
       runWatts: runCr.watts || 0,
       startWatts: startCr.watts || 0,
-      resistance: c.props.runResistance,
+      resistance: (typeof c.props.runResistance === 'number' && isFinite(c.props.runResistance))
+        ? c.props.runResistance : 0,
       _sourceType: compSourceType(c),
       _surgeFactor: runCr._surgeFactor || startCr._surgeFactor
     };
@@ -2064,14 +2221,28 @@ function solveElectricalPass() {
           const speedFactor = 1 - Math.exp(-elapsed / 0.5);
           const backEMFVoltage = (c.props.nominalVoltage || 120) * turnsRatio * speedFactor;
           compResults[c.id]._startBackEMFVoltage = backEMFVoltage;
-          // Set all nodes in the S-terminal net to back-EMF voltage
+          // Set all nodes in the S-terminal net to back-EMF voltage.
+          //
+          // BOTH node maps have to move together. `nodeVoltages` is the scalar map
+          // the renderer and the NCV tester read; `nodePhasors` is the complex one
+          // the multimeter's AC path subtracts, precisely so two 277 V legs read
+          // 480 V apart. Writing only the scalar left the meter subtracting the
+          // stale solved phasors — so the S terminal held 154.9 V, the data box
+          // said 154.9 V, and the meter provided to measure it read 0.0 V. The
+          // whole point of modelling back-EMF is that a student can measure it.
+          //
+          // The back-EMF model produces a MAGNITUDE only, so the phasor is
+          // published at the supply's own 0° reference rather than inventing a
+          // phase the model does not compute. |phasor| then equals the scalar, and
+          // the two maps agree by construction.
           const sNet = find(key(c.gx3, c.gy3));
+          const backEMFPhasor = Cx.make(backEMFVoltage, 0);
           for (const k of Object.keys(parent)) {
-            if (find(k) === sNet) nodeVoltages[k] = backEMFVoltage;
+            if (find(k) === sNet) { nodeVoltages[k] = backEMFVoltage; nodePhasors[k] = backEMFPhasor; }
           }
           for (const w of wires) {
             for (const k of [key(w.gx1, w.gy1), key(w.gx2, w.gy2)]) {
-              if (find(k) === sNet) nodeVoltages[k] = backEMFVoltage;
+              if (find(k) === sNet) { nodeVoltages[k] = backEMFVoltage; nodePhasors[k] = backEMFPhasor; }
             }
           }
           // Update capacitors connected to S-net: show held voltage, 0 current (open circuit)
@@ -2080,10 +2251,18 @@ function solveElectricalPass() {
             const cn1 = find(key(cap.gx1, cap.gy1));
             const cn2 = find(key(cap.gx2, cap.gy2));
             if (cn1 === sNet || cn2 === sNet) {
+              // Subtract PHASORS, never magnitudes. |V1| − |V2| is only the
+              // voltage between two nodes when they happen to be in phase, and on
+              // a grounded system the reference moves to earth and they are not:
+              // the run-capacitor drop came out at 35 V where the phasors say 275.
+              // The scalar map is the fallback for a node the solve never reached.
+              const p1 = nodePhasors[key(cap.gx1, cap.gy1)];
+              const p2 = nodePhasors[key(cap.gx2, cap.gy2)];
               const cv1 = nodeVoltages[key(cap.gx1, cap.gy1)] || 0;
               const cv2 = nodeVoltages[key(cap.gx2, cap.gy2)] || 0;
+              const drop = (p1 && p2) ? Cx.abs(Cx.sub(p1, p2)) : Math.abs(cv1 - cv2);
               compResults[cap.id] = {
-                voltageDrop: Math.abs(cv1 - cv2), current: 0, watts: 0,
+                voltageDrop: drop, current: 0, watts: 0,
                 resistance: compResults[cap.id]?.resistance || cap.props.resistance,
                 _sourceType: compResults[cap.id]?._sourceType || 'AC'
               };

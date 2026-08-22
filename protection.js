@@ -72,11 +72,17 @@ const _SEVERITY_RANK = { info: 0, warning: 1, critical: 2 };
 //             system can actually deliver into a bolted fault.
 //
 // ASSUMPTIONS:
-//   • Purely resistive. A real system impedance is complex (X/R typically 1–6 at
-//     a panel), which affects fault-current phase angle and asymmetry. Since this
-//     solver is scalar RMS with no phase angles, a resistive Rs of the right
-//     MAGNITUDE is the honest simplification — it gets the current right and
-//     makes no claim about angle.
+//   • Purely resistive — X = 0, so Rs fixes the MAGNITUDE the system can deliver
+//     and nothing else. A real system impedance is complex (X/R typically 1–6 at
+//     a panel). This is a deliberate simplification, NOT a limit of the
+//     arithmetic: the solver has been complex-phasor since phasor.js and would
+//     stamp a reactive Rs perfectly well. It is kept resistive so that the single
+//     number a trainee sets — available fault current — is enough to define the
+//     source, with no second X/R field to get wrong.
+//     What it costs is angle: fault current comes out in phase with the source
+//     EMF, so anything that depends on source X/R is wrong even where the
+//     magnitude is right. Asymmetry and DC offset are out of scope either way —
+//     they are transient, and this is a steady-state solve.
 //   • Constant with load. No transformer regulation curve, no voltage-dependent
 //     behaviour, no motor contribution to fault current.
 //   • One impedance from source to every point. There is no per-conductor length
